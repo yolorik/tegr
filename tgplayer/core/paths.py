@@ -69,13 +69,47 @@ def set_launch_dir(path):
     return _launch_dir
 
 
+# Каталог, где лежит сама программа (.exe или исходники). Отличается от
+# каталога данных, когда данные ушли в профиль из-за прав доступа.
+_program_dir = None
+
+
+def set_program_dir(path):
+    """Назначает каталог программы — там ресурсы вроде tgplayer.ico."""
+    global _program_dir
+    _program_dir = os.path.abspath(path) if path else None
+    return _program_dir
+
+
+def program_dir():
+    """Каталог самой программы (не данных)."""
+    if _program_dir:
+        return _program_dir
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    if _launch_dir:
+        return _launch_dir
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def load_app_icon():
     """Иконка приложения из tgplayer.ico, иначе None.
 
-    Ищем и рядом с .exe, и во внутреннем каталоге сборки: PyInstaller
-    кладёт --add-data в _internal, а не в корень сборки.
+    Ищем в трёх местах по порядку:
+
+    * во внутреннем каталоге сборки — PyInstaller кладёт --add-data в
+      _internal, а не в корень;
+    * рядом с .exe — там файл лежит в переносимой сборке;
+    * в каталоге данных (профиле) — на случай, если программу поставили
+      туда, куда писать нельзя (Program Files), и данные ушли в профиль.
+
+    Последний пункт появился из-за реальной ошибки: после установки в
+    Program Files данные переехали в профиль, иконки там не было, и в
+    трее показывался запасной значок вместо настоящего.
     """
-    for base in (bundle_dir(), app_dir()):
+    for base in (bundle_dir(), app_dir(), program_dir()):
+        if not base:
+            continue
         path = os.path.join(base, 'tgplayer.ico')
         if os.path.exists(path):
             icon = QIcon(path)

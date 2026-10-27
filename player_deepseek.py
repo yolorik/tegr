@@ -40,12 +40,80 @@ if _HERE not in sys.path:
 # а настройки и сессия, положенные рядом с .exe, не подхватывались вовсе.
 # В сборке ориентир — только путь к самому .exe.
 if getattr(sys, 'frozen', False):
-    _DATA_HOME = os.path.dirname(os.path.abspath(sys.executable))
+    _APP_HOME = os.path.dirname(os.path.abspath(sys.executable))
 else:
-    _DATA_HOME = _HERE
+    _APP_HOME = _HERE
+
+
+def _data_home(app_home):
+    """Выбирает папку для данных: рядом с программой или в профиле.
+
+    Раньше данные всегда лежали рядом с .exe. Для переносимой папки это
+    удобно, но если программу поставили в Program Files, туда обычному
+    пользователю писать нельзя — и плеер падал при запуске на создании
+    файла сессии:
+
+        sqlite3.OperationalError: unable to open database file
+
+    Теперь решает простая проба: пробуем записать файл рядом с .exe.
+    Получилось — оставляем переносимый режим, как было. Не получилось —
+    уходим в профиль пользователя, где писать можно всегда.
+
+    Проба дешёвая (один файл), выполняется один раз при старте и не
+    затрагивает сами данные.
+    """
+    probe = os.path.join(app_home, '.tgplayer_write_test')
+    try:
+        with open(probe, 'w') as f:
+            f.write('ok')
+        os.remove(probe)
+        return app_home
+    except Exception:
+        pass
+
+    # Рядом писать некуда — берём папку профиля.
+    base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
+    if not base:
+        base = os.path.join(os.path.expanduser('~'), 'AppData', 'Local')
+    target = os.path.join(base, 'TGPlayer')
+    try:
+        os.makedirs(target, exist_ok=True)
+        # Переносим то, что уже лежит рядом с программой: настройки,
+        # историю, вход. Иначе после установки в Program Files человек
+        # остался бы без своего аккаунта и настроек.
+        _adopt_existing(app_home, target)
+        return target
+    except Exception:
+        # Даже профиль недоступен — остаёмся рядом с программой и
+        # пытаемся работать как есть. Ошибку покажет обычный путь.
+        return app_home
+
+
+def _adopt_existing(src, dst):
+    """Переносит данные из папки программы в профиль при первом запуске.
+
+    Копируем, а не переносим: если программа стоит в папке, откуда её
+    потом удалят, оригиналы не нужны, но и терять их не хочется. Уже
+    существующие файлы в профиле НЕ перезаписываем — там свежее.
+    """
+    import shutil
+    names = ['my_player_session.session', 'my_player_session.session-journal',
+             'settings.json', 'history.json', 'proxy.txt']
+    for name in names:
+        s = os.path.join(src, name)
+        d = os.path.join(dst, name)
+        if os.path.exists(s) and not os.path.exists(d):
+            try:
+                shutil.copy2(s, d)
+            except Exception:
+                pass
+
+
+_DATA_HOME = _data_home(_APP_HOME)
 
 from tgplayer.core import paths as _paths
 _paths.set_launch_dir(_DATA_HOME)
+_paths.set_program_dir(_APP_HOME)
 # Пакет ещё не импортирован, а config уже читает app_dir() — передаём
 # каталог сразу, иначе он возьмёт каталог пакета.
 _paths.set_base_dir(_DATA_HOME)
