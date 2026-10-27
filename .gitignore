@@ -39,3 +39,7 @@ _inst_probe/
 _extracted_1810/
 _extracted_1810.bin
 version_info_gen.txt
+
+# Файлы для выкладки релиза: сам установщик весит 70 МБ,
+# его место в релизах GitHub, а не в истории git.
+_release_*/
