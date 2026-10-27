@@ -80,6 +80,22 @@ class PlayerWindow(QMainWindow):
         # Поколение, для которого заведено авто-лечение картинки: таймер
         # загрузки может сработать уже после переключения серии.
         self._auto_fix_gen = 0
+        # Лечение картинки уже применено к текущему ролику: повторять
+        # нельзя, иначе перезапуск за перезапуском.
+        self._auto_healing = False
+        # Сколько раз перезапускали файл ради картинки. Считается на
+        # ролик, а не на попытку: перезапуск идёт через play_video, тот
+        # ставит свежую проверку с attempt=0, и без этого счётчик
+        # обнулялся — лечение шло по кругу до восьми раз.
+        self._verify_restarts = 0
+        # Поколение, для которого mpv уже объявил ширину дорожки. По этой
+        # отметке проверка понимает, что картинка была: пустая ширина
+        # сразу после перехода на новый файл — не поломка.
+        self._video_seen_gen = -1
+        # Началось ли воспроизведение этого ролика: пришла ли от mpv хоть
+        # одна секунда позиции. Пока не началось — файл ещё качается или
+        # разбирается, и лечить нечего.
+        self._play_started = False
         self._current_doc_id = None
         self._next_doc_id = None
         self._speed_hist = deque()
@@ -292,6 +308,11 @@ class PlayerWindow(QMainWindow):
         @self.player.property_observer('video-params/w')
         def _d_w(_name, value):
             self._vdiag['w'] = value
+            # Картинка есть. Отмечаем и поколение: проверка ниже по этой
+            # отметке понимает, что лечить нечего, даже если ширина
+            # сбросилась при переходе к следующему файлу.
+            if value:
+                self._video_seen_gen = getattr(self, '_play_gen', 0)
 
         @self.player.property_observer('video-params/h')
         def _d_h(_name, value):
@@ -850,6 +871,10 @@ class PlayerWindow(QMainWindow):
         # _current_doc_id ещё указывает на него.
         self._save_position()
         prev_doc_id = self._current_doc_id
+        # Тот же ли это ролик, что играл до сих пор. Сравнивать index с
+        # current_video_index НЕЛЬЗЯ после присваивания ниже: они всегда
+        # равны, и сброс счётчиков не срабатывал никогда.
+        same_video = (index == self.current_video_index)
 
         self.current_video_index = index
         self._play_ts = time.monotonic()
@@ -864,6 +889,9 @@ class PlayerWindow(QMainWindow):
         # короткий прошлый ролик запускал ложный автопереход, и при нажатии
         # «назад» плеер тут же возвращался на ролик, с которого переключил.
         self._duration = 0.0
+        # Новый файл: воспроизведение ещё не началось, и проверке картинки
+        # не на что опереться — ждём первую секунду от mpv.
+        self._play_started = False
         # Позиция просмотра нужна, чтобы понимать, насколько загрузка ушла
         # вперёд, и вовремя начать качать следующий ролик.
         self._last_pos = 0.0
@@ -874,6 +902,12 @@ class PlayerWindow(QMainWindow):
         # прекратиться, иначе они продолжат качать уже не нужный ролик.
         self._play_gen += 1
         gen = self._play_gen
+        # Счётчик перезапусков картинки сбрасываем только при смене
+        # ролика, а не при каждом перезапуске того же файла. Иначе лечение
+        # обнуляется на каждом круге и идёт бесконечно.
+        if not same_video:
+            self._verify_restarts = 0
+            self._auto_healing = False
 
         document = None
         next_doc = None
@@ -1034,6 +1068,12 @@ class PlayerWindow(QMainWindow):
             self._last_pos = float(v or 0.0)
         except (TypeError, ValueError):
             pass
+
+        # Воспроизведение реально началось: mpv отдал хоть какую-то
+        # позицию. По этой отметке проверка картинки понимает, что файл
+        # уже играет, и не лечит его повторными перезапусками.
+        if v and not self._play_started:
+            self._play_started = True
 
         # Резервный триггер автоперехода: если mpv не сообщил о конце файла
         # (свойство eof-reached на части сборок не срабатывает), переходим к
@@ -2410,6 +2450,12 @@ class PlayerWindow(QMainWindow):
         vw = self._mpv_get('video-params/w')
         codec = self._mpv_get('video-codec')
 
+        # Дорожка уже была найдена для этого же ролика: значит картинка
+        # пошла, и пустая ширина сейчас — только след перехода mpv на
+        # новый файл. Без этой отметки проверка «лечила» здоровый ролик.
+        if getattr(self, '_video_seen_gen', -1) == gen:
+            return
+
         # Свойства не читаются — судить о состоянии видео нельзя, молчим.
         if configured is None and vw is None and codec is None:
             return
@@ -2423,6 +2469,16 @@ class PlayerWindow(QMainWindow):
         # сюда попадали всегда: свойства не читались вовсе, поэтому
         # проверка молча выходила и на живом видео не срабатывала.
         if not configured:
+            return
+
+        # Файл ещё даже не начал воспроизводиться: mpv не сообщил ни
+        # одной секунды. Значит он занят — качает, буферизует, ищет
+        # индекс, — и это не поломка. Ровно здесь и был «затуп каждые
+        # две-три серии»: рядовой ролик стартует за 1.8 с, а проверка
+        # приходила на 1.2 с, видела пустую ширину и перезапускала
+        # здоровый файл. Перезапуск заново тянул начало, и всё
+        # повторялось.
+        if not self._play_started:
             return
 
         print(f"[MPV] видео не пошло: vo-configured={configured}, "
@@ -2449,13 +2505,24 @@ class PlayerWindow(QMainWindow):
                 self.play_video(self.current_video_index)
             return
 
-        print("[MPV] перезапускаю файл, чтобы перечитать индекс")
+        # Сколько раз лечили ЭТОТ ролик. Считать по попыткам на вызов
+        # нельзя: перезапуск идёт через play_video, а тот ставит свежую
+        # проверку с attempt=0 — счётчик обнулялся, и лечение шло по
+        # кругу. Теперь ограничение на ролик: не больше трёх перезапусков.
+        self._verify_restarts += 1
+        if self._verify_restarts > 3:
+            print("[MPV] перезапуски не помогли — оставляю как есть")
+            if self._enable_compat_mode(auto=True):
+                self._pending_seek = pos if pos > 0.5 else None
+                self.play_video(self.current_video_index)
+            return
+
+        print("[MPV] перезапускаю файл, чтобы перечитать индекс "
+              f"(#{self._verify_restarts})")
         self._pending_seek = pos if pos > 0.5 else None
+        # Перезапуск — тем же путём, что клавиша H. play_video ставит
+        # новую проверку сам, поэтому здесь её не дублируем.
         self.play_video(self.current_video_index)
-        # Повторную проверку ставим на поколение НОВОГО воспроизведения:
-        # play_video увеличил счётчик, и старая проверка уже не в счёт.
-        new_gen = self._play_gen
-        QTimer.singleShot(1500, lambda: self._verify_vo(new_gen, 1))
 
     def _auto_heal_picture(self):
         """Перезапускает текущий файл, если картинка так и не появилась.
@@ -2477,6 +2544,12 @@ class PlayerWindow(QMainWindow):
         # Картинка уже есть — лечить нечего.
         if self._mpv_get('video-params/w'):
             return
+        # Лечение одно на ролик. Иначе оно запускает перезапуск, тот ставит
+        # свою проверку, та снова зовёт это лечение — и так по кругу, пока
+        # ролик наконец не разберётся.
+        if self._auto_healing:
+            return
+        self._auto_healing = True
         try:
             pos = float(self._mpv_get('time-pos') or 0.0)
         except Exception:
