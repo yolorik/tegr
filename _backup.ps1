@@ -21,8 +21,8 @@ function Make-Backup {
     }
 
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    robocopy $root $dest /E /XD .git dist_v2 __pycache__ _backups build _build installer `
-        /XF *.pyc *.dll *.exe *.ico *.log /NFL /NDL /NJH /NJS /NP | Out-Null
+    robocopy $root $dest /E /XD .git dist_v2 __pycache__ _backups build _build installer _inst_probe _extracted_1810 stream_cache `
+        /XF *.pyc *.dll *.exe *.ico *.log *.bin version_info_gen.txt /NFL /NDL /NJH /NJS /NP | Out-Null
 
     $head = git -C $root rev-parse --short HEAD
     $subject = git -C $root log -1 --pretty=%s
