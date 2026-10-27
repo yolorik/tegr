@@ -27,7 +27,8 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
     QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton,
     QScrollArea, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
     QWidget, QWidgetAction)
 
@@ -157,6 +158,87 @@ class NoWheelComboBox(QComboBox):
 
     def wheelEvent(self, event):
         event.ignore()
+
+
+class DownloadDialog(QDialog):
+    """Окно загрузки обновления: шкала, проценты и скорость.
+
+    Раньше это был QMessageBox с одной строкой — окно маленькое, текст
+    прижат влево, и непонятно, идёт загрузка или всё встало. Здесь всё
+    по центру, видно шкалу и сколько осталось, а закрывать окно крестиком
+    нельзя: иначе непонятно, что произошло с загрузкой.
+    """
+
+    cancelled = pyqtSignal()
+
+    def __init__(self, parent, title):
+        super().__init__(parent)
+        self.setWindowTitle('Загрузка обновления')
+        self.setFixedWidth(420)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self._cancelled = False
+        self._total = 0
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 18)
+        root.setSpacing(14)
+
+        self.lbl_title = QLabel(title)
+        self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_title.setObjectName('about_title')
+        root.addWidget(self.lbl_title)
+
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        root.addWidget(self.bar)
+
+        self.lbl_info = QLabel('Подготовка…')
+        self.lbl_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_info.setObjectName('hint')
+        root.addWidget(self.lbl_info)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.btn_cancel = QPushButton('Отмена')
+        self.btn_cancel.clicked.connect(self._on_cancel)
+        row.addWidget(self.btn_cancel)
+        row.addStretch(1)
+        root.addLayout(row)
+
+    def _on_cancel(self):
+        self._cancelled = True
+        self.cancelled.emit()
+        self.reject()
+
+    @property
+    def was_cancelled(self):
+        return self._cancelled
+
+    def on_progress(self, chunk, total):
+        """Обновляет шкалу. Вызывается из фонового потока — только сигналом.
+
+        Шаг считаем от total: если GitHub не сообщил размер, шкала
+        останется бегущей (0..0), и человек всё равно видит, что процесс
+        живой.
+        """
+        if self._cancelled:
+            return
+        if total > 0:
+            self._total = total
+            self._got = getattr(self, '_got', 0) + chunk
+            pct = min(100, int(self._got * 100 / total))
+            self.bar.setRange(0, 100)
+            self.bar.setValue(pct)
+            self.lbl_info.setText(
+                f'{pct}%  ·  {self._got / 1048576:.1f} '
+                f'из {total / 1048576:.1f} МБ')
+        else:
+            # Размер неизвестен — крутим бесконечную шкалу.
+            self.bar.setRange(0, 0)
+            self.lbl_info.setText('Загрузка…')
 
 
 class UpdateDialog(QDialog):
@@ -1081,6 +1163,9 @@ class MainWindow(QMainWindow):
     # через очередь как положено. Без этого проверка то срабатывала, то
     # нет — и хуже всего, что молча.
     _update_ready = pyqtSignal(object, str, bool)
+    # Ход загрузки обновления и её завершение — тоже сигналами.
+    _download_progress = pyqtSignal(int, int)
+    _download_done = pyqtSignal(bool, str, str)
 
     def __init__(self, backend):
         super().__init__()
@@ -1601,27 +1686,50 @@ class MainWindow(QMainWindow):
     def _download_and_install(self, info):
         """Скачивает установщик и запускает его.
 
-        Пока идёт скачивание, показываем окно с прогрессом без кнопок:
-        закрыть его нельзя, иначе непонятно, что происходит.
+        Пока идёт загрузка, показываем окно со шкалой. Окно держим
+        модальным: пока непонятно, что с загрузкой, работать с плеером
+        всё равно не имеет смысла.
         """
         # Временная папка: установщик — временный файл, держать его рядом
         # с программой незачем.
         dest = os.path.join(tempfile.gettempdir(),
                             f'TGPlayer_Setup_{info.tag.lstrip("vV")}.exe')
 
-        box = QMessageBox(self)
-        box.setWindowTitle('Загрузка обновления')
-        box.setText(f'Скачиваю TGPlayer {info.tag.lstrip("vV")}…')
-        box.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        box.show()
+        ver = info.tag.lstrip('vV')
+        dlg = DownloadDialog(self, f'Скачиваю TGPlayer {ver}')
 
         def worker():
-            ok, msg = updates.download(info, dest)
-            QTimer.singleShot(0, lambda: (
-                box.close(), self._after_download(ok, msg, dest)))
+            ok, msg = updates.download(
+                info, dest,
+                progress=lambda chunk, total: (
+                    self._download_progress.emit(chunk, total)))
+            # Через сигнал, а не QTimer: из фонового потока таймер
+            # срабатывает через раз и молча — на этом уже обжигались
+            # и с проверкой обновлений.
+            self._download_done.emit(ok, msg, dest)
+
+        def upload_progress(chunk, total):
+            # Счётчик копим в диалоге, а не в замыкании: так он не растёт
+            # между попытками и не утекает.
+            dlg.on_progress(chunk, total)
+
+        self._download_progress.connect(upload_progress)
+        self._download_done.connect(
+            lambda ok, msg, path: (dlg.accept(),
+                                   self._after_download(ok, msg, path)))
 
         threading.Thread(target=worker, daemon=True,
                          name='update-download').start()
+        dlg.exec()
+
+        try:
+            self._download_progress.disconnect(upload_progress)
+        except Exception:
+            pass
+        try:
+            self._download_done.disconnect()
+        except Exception:
+            pass
 
     def _after_download(self, ok, msg, path):
         if not ok:

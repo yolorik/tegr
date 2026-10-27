@@ -177,20 +177,50 @@ def check(channel='stable'):
 
 
 def download(info, dest_path, progress=None):
-    """Скачивает установщик и сверяет хеш.
+    """Скачивает установщик с показом хода и сверяет хеш.
 
-    progress(получено_байт, всего_байт) вызывается по ходу.
+    progress(получено_байт, всего_байт) вызывается по ходу загрузки.
     Возвращает (успех, сообщение).
+
+    Читаем потоком и кусками, а не целиком в память: установщик весит
+    70 МБ, и без промежуточных отчётов окно прогресса стояло бы на нуле
+    до самого конца, а потом сразу закрывалось.
     """
-    code, raw = _get(info.setup_url)
-    if code != 200 or raw is None:
-        return False, f'не удалось скачать установщик (код {code})'
+    req = urllib.request.Request(info.setup_url, headers={
+        'User-Agent': USER_AGENT,
+    })
+    try:
+        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+    except urllib.error.HTTPError as ex:
+        return False, f'не удалось скачать установщик (код {ex.code})'
+    except Exception as ex:
+        return False, f'не удалось скачать установщик: {ex}'
 
+    total = info.size or 0
+    digest = hashlib.sha256()
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    with open(dest_path, 'wb') as f:
-        f.write(raw)
 
-    got = hashlib.sha256(raw).hexdigest()
+    try:
+        with resp, open(dest_path, 'wb') as f:
+            while True:
+                block = resp.read(64 * 1024)
+                if not block:
+                    break
+                f.write(block)
+                digest.update(block)
+                if progress is not None:
+                    try:
+                        progress(len(block), total)
+                    except Exception:
+                        pass        # отчёт не должен ломать загрузку
+    except Exception as ex:
+        try:
+            os.remove(dest_path)
+        except Exception:
+            pass
+        return False, f'загрузка оборвалась: {ex}'
+
+    got = digest.hexdigest()
 
     # Хеш сверяем, только если он опубликован: без него скачивание всё
     # равно лучше, чем ничего, но проверить целостность нечем.

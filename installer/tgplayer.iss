@@ -27,6 +27,11 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher=TGPlayer
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
+; Страницу выбора папки НЕ скрываем — это поведение по умолчанию, но
+; прописано явно, чтобы никто не отключил его случайно. Человек вправе
+; поставить программу на другой диск: кеш роликов занимает гигабайты, и
+; на системном месте может не хватить.
+DisableDirPage=no
 DisableProgramGroupPage=yes
 OutputDir=C:\tgplayer\installer
 OutputBaseFilename=TGPlayer_Setup
