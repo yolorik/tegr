@@ -11,7 +11,11 @@
 ; proxy.txt, наоборот, кладём: это шаблон с подсказками, без секретов.
 
 #define AppName "TGPlayer"
-#define AppVersion "2.0"
+; Версия установщика. Держим в том же формате, что и сам плеер
+; (tgplayer/core/version.py): 2.4.0d, где буква — схема загрузчика.
+; Сверяйте при сборке: установщик обёртывает уже собранный .exe, и если
+; .exe пересобрали с новой версией, здесь её надо поднять руками.
+#define AppVersion "2.4.0d"
 #define AppExe "TGPlayerV2.exe"
 #define SrcDir "C:\tgplayer\dist_v2\TGPlayerV2"
 
