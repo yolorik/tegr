@@ -1,0 +1,31 @@
+# Что не хранить в git.
+#
+# Отсекаем всё, что генерируется, весит много или содержит личные данные:
+__pycache__/
+*.pyc
+*.pyo
+
+# Сборка: пересобирается скриптом, весит сотни мегабайт.
+build_v2/
+dist_v2/
+installer/TGPlayerV2_Setup.exe
+
+# Библиотеки: 120 МБ, лежат в поставке и пересборке не нужны.
+libmpv-2.dll
+vulkan-1.dll
+
+# Личные данные: вход в Telegram, история, настройки, журналы.
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+history.json
+settings.json
+tgplayer.log
+tgplayer.log.*
+
+# Кеш роликов и временные файлы моих проверок.
+stream_cache/
+_*.txt
+_*.png
+_*.bmp
