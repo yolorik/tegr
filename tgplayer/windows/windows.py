@@ -23,7 +23,7 @@ from PyQt6.QtCore import (
     QTimer, pyqtSignal)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFontMetricsF, QIcon, QImage, QKeySequence,
-    QPainter, QPen, QPixmap, QShortcut)
+    QPainter, QPainterPath, QPen, QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
     QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -1074,9 +1074,20 @@ class CornerConnectionButton(QWidget):
 
 
 class MainWindow(QMainWindow):
+    # Результат проверки обновлений из фонового потока.
+    #
+    # Сигнал, а не QTimer: таймер из чужого потока ненадёжен (у него нет
+    # своего цикла событий Qt), а сигнал доставляется в поток получателя
+    # через очередь как положено. Без этого проверка то срабатывала, то
+    # нет — и хуже всего, что молча.
+    _update_ready = pyqtSignal(object, str, bool)
+
     def __init__(self, backend):
         super().__init__()
         self.backend = backend
+        # Сигнал проверки обновлений идёт из фонового потока — соединение
+        # ставим сразу, до всего остального.
+        self._update_ready.connect(self._on_update_checked)
         self.player_window = None
         self._active_dialog_id = None
         self._preload_doc_id = None
@@ -1374,14 +1385,25 @@ class MainWindow(QMainWindow):
         Если трея в системе нет, режим не включается: окно спряталось бы,
         и вернуть его стало бы нечем.
         """
-        if not QSystemTrayIcon.isSystemTrayAvailable():
+        available = QSystemTrayIcon.isSystemTrayAvailable()
+        print(f"[Трей] доступен: {available}")
+        if not available:
             return
         # Значок в трее — иконка программы, как была раньше: она узнаваема
         # и совпадает с ярлыком. Состояние связи видно по значку в углу
         # окна, дублировать его в трее незачем.
         icon = paths.load_app_icon()
-        tray = QSystemTrayIcon(icon if icon is not None else QIcon(), self)
-        tray.setToolTip('TG Player')
+        # Пустой QIcon в трее выглядит как отсутствие значка: Windows
+        # показывает пустое место, и понять, что программа запущена,
+        # можно только по окну. Поэтому проверяем не «None ли», а «есть
+        # ли настоящая картинка».
+        if icon is None or icon.isNull() or not icon.availableSizes():
+            print(f"[Трей] иконка не найдена или пуста — использую запасную")
+            icon = self._fallback_tray_icon()
+        else:
+            print(f"[Трей] иконка: {[ (s.width(), s.height()) for s in icon.availableSizes() ]}")
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip(f'{version.APP_NAME} {version.VERSION}')
 
         # Переключатели переехали в окно настроек: в меню значка их было
         # неудобно искать, и не видно, что уже включено.
@@ -1400,6 +1422,39 @@ class MainWindow(QMainWindow):
         tray.activated.connect(self._on_tray_activated)
         tray.show()
         self.tray = tray
+
+    @staticmethod
+    def _fallback_tray_icon():
+        """Запасной значок, если tgplayer.ico не нашёлся.
+
+        Рисуем сами: в трее должен быть хоть какой-то видимый знак, иначе
+        непонятно, что программа запущена и свернулась. Цвет — акцент
+        темы, чтобы значок подходил к оформлению.
+        """
+        size = 64
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            try:
+                accent = QColor(theme.theme()['accent'])
+            except Exception:
+                accent = QColor('#5288c1')
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(accent)
+            painter.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), 14, 14)
+            # Треугольник «играть» белым.
+            painter.setBrush(QColor(255, 255, 255))
+            path = QPainterPath()
+            path.moveTo(size * 0.38, size * 0.28)
+            path.lineTo(size * 0.38, size * 0.72)
+            path.lineTo(size * 0.74, size * 0.50)
+            path.closeSubpath()
+            painter.drawPath(path)
+        finally:
+            painter.end()
+        return QIcon(pix)
 
     def _on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger,
@@ -1475,7 +1530,10 @@ class MainWindow(QMainWindow):
         обновления. Поэтому нет сети или GitHub молчит — просто молчим
         тоже. Блокирующее окно о неудачной проверке раздражало бы.
         """
-        if not self._setting('check_updates', True):
+        enabled = self._setting('check_updates', True)
+        print(f"[Обновление] запуск проверки: включена={enabled}, "
+              f"канал={self._update_channel()}")
+        if not enabled:
             return
         self._run_update_check(manual=False)
 
@@ -1496,9 +1554,18 @@ class MainWindow(QMainWindow):
                 info, reason = updates.check(channel)
             except Exception as ex:
                 info, reason = None, f'{type(ex).__name__}: {ex}'
-            # Возврат в поток Qt: диалоги можно показывать только оттуда.
-            QTimer.singleShot(
-                0, lambda: self._on_update_checked(info, reason, manual))
+            print(f"[Обновление] поток закончил: info={info} reason={reason}")
+            # Возврат в поток Qt — через сигнал, а не через QTimer.
+            #
+            # QTimer.singleShot из чужого потока ненадёжен: у фонового
+            # потока нет своего цикла событий Qt, и таймер может не
+            # сработать вовсе или сработать не в том потоке. Сигнал,
+            # наоборот, доставляется в поток получателя через очередь
+            # событий — это штатный и безопасный способ.
+            try:
+                self._update_ready.emit(info, reason, manual)
+            except Exception as ex:
+                print(f"[Обновление] сигнал не ушёл: {ex}")
 
         threading.Thread(target=worker, daemon=True,
                          name='update-check').start()
