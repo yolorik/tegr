@@ -1,4 +1,4 @@
-"""Окно плеера: mpv, управление, перемотка, качество, клавиши.
+"""Окно плеера: mpv, управление, перемотка, клавиши.
 
 Самое большое окно программы. Знает про mpv (через python-обвязку mpv),
 про бэкенд (откуда брать байты) и про виджеты панели; само ничего не
@@ -49,9 +49,6 @@ class PlayerWindow(QMainWindow):
     sig_aspect = pyqtSignal(float)
     sig_closed = pyqtSignal()
     sig_watched = pyqtSignal()
-    # Список качеств, подготовленный в потоке бэкенда (msg_id, варианты).
-    sig_qualities = pyqtSignal(object, list)
-
     def __init__(self, backend, initial_video_index, parent=None):
         super().__init__(parent)
         self.backend = backend
@@ -62,10 +59,6 @@ class PlayerWindow(QMainWindow):
         self.playlist = []
         self._playlist_token = None
         self.set_playlist(self.backend.current_messages)
-        # Меню качества готовится в потоке бэкенда, а показать Qt-меню можно
-        # только из потока окна: QTimer.singleShot в чужом потоке не
-        # срабатывает, поэтому результат приходит сигналом.
-        self.sig_qualities.connect(self._display_quality_menu)
         # Иконка в заголовке окна: по ней плеер узнаётся на панели задач.
         icon = paths.load_app_icon()
         if icon is not None:
@@ -87,8 +80,8 @@ class PlayerWindow(QMainWindow):
         # её только когда они реально изменились (см. update_download_progress).
         self._last_buffered = None
         # Настройки, переживающие перезапуск: громкость, режим декодера,
-        # скорость, автовыбор качества, размер окна.
-        self._auto_quality = bool(self._setting('auto_quality'))
+        # скорость, размер окна.
+
         # Автоспроизведение: переходить к следующей серии самому. По
         # умолчанию включено — так плеер вёл себя всегда, и выключать
         # привычное поведение по умолчанию было бы странно.
@@ -410,7 +403,6 @@ class PlayerWindow(QMainWindow):
         bar.btn_play.clicked.connect(self.toggle_play_pause)
         bar.btn_ff.clicked.connect(lambda: self.seek_rel(10))
         bar.btn_next.clicked.connect(self.play_next)
-        bar.btn_quality.clicked.connect(self.show_quality_menu)
         bar.btn_mute.clicked.connect(self.toggle_mute)
         bar.btn_fs.clicked.connect(self.toggle_fullscreen)
         bar.btn_pip.clicked.connect(self.toggle_pip)
@@ -560,31 +552,12 @@ class PlayerWindow(QMainWindow):
                 if (not self._warned_slow
                         and self._slow_checks >= config.SLOW_CHECKS_BEFORE_WARN):
                     self._warned_slow = True
-
-                    # Автовыбор: переключаем на вариант, который канал тянет.
-                    if self._auto_quality:
-                        try:
-                            msg = self.playlist[self.current_video_index]
-                            variant = self.backend.pick_quality_for_speed(
-                                msg, speed_mbps * 0.85
-                            )
-                        except Exception:
-                            variant = None
-
-                        if (variant is not None
-                                and variant['doc_id'] != self._current_doc_id):
-                            self.show_osd(
-                                f"Канал ~{speed_mbps:.1f} Мбит/с — "
-                                f"переключаю на {variant['quality']}",
-                                3500
-                            )
-                            self.play_selected_quality(variant['message'])
-                            return
-
+                    # Переключать на «качество поменьше» больше нечем и
+                    # незачем: кнопка убрана, в Telegram у видео обычно
+                    # одно качество. Остаётся честное предупреждение.
                     self.show_osd(
                         f"Канал ~{speed_mbps:.1f} Мбит/с, видео "
-                        f"{self._cur_bitrate_mbps:.1f} Мбит/с — будут паузы. "
-                        f"Кнопка «Качество»",
+                        f"{self._cur_bitrate_mbps:.1f} Мбит/с — будут паузы",
                         4500
                     )
         else:
@@ -702,7 +675,6 @@ class PlayerWindow(QMainWindow):
         "H — перебрать режим декодирования\n"
         "M — выключить звук\n"
         "N / P — следующий / предыдущий ролик\n"
-        "Q — качество\n"
         "[ / ] — медленнее / быстрее\n"
         "\\ — обычная скорость\n"
         "A — пропорции картинки\n"
@@ -971,7 +943,7 @@ class PlayerWindow(QMainWindow):
                f"?idx={index}&pl={self._playlist_token or ''}")
 
         # Позиция, с которой надо начать. Приоритет у явной перемотки
-        # (_pending_seek: смена декодера, качества, автолечение), иначе —
+        # (_pending_seek: смена декодера, автолечение), иначе —
         # сохранённое место просмотра этого ролика.
         start_at = self._pending_seek
         self._pending_seek = None
@@ -1397,119 +1369,6 @@ class PlayerWindow(QMainWindow):
         base = f"{title} — {channel}" if channel else title
         return f"{base}  [{version.version_text()}]"
 
-    def show_quality_menu(self):
-        if (self.current_video_index < 0
-                or self.current_video_index >= len(self.playlist)):
-            return
-        message = self.playlist[self.current_video_index]
-        self.backend.submit_coroutine(
-            self._load_and_show_qualities(message)
-        )
-
-    async def _load_and_show_qualities(self, message):
-        """Готовит качества в потоке бэкенда и отдаёт их сигналом.
-
-        Раньше здесь стоял QTimer.singleShot(0, ...), но этот код идёт в
-        потоке бэкенда, где нет работающего цикла событий Qt: таймер не
-        срабатывал никогда, и меню качества просто не появлялось.
-        """
-        try:
-            key = TelegramBackend._msg_key(message)
-            qualities = await self.backend.get_video_qualities(message)
-            if qualities:
-                self.sig_qualities.emit(key, qualities)
-        except Exception as e:
-            print(f"[Качество] Ошибка: {e}")
-
-    def _display_quality_menu(self, msg_key, qualities):
-        if (self.current_video_index < 0
-                or self.current_video_index >= len(self.playlist)):
-            return
-        # Ролик успели переключить, пока грузились качества — меню неактуально.
-        if TelegramBackend._msg_key(
-                self.playlist[self.current_video_index]) != msg_key:
-            return
-        menu = QMenu(self)
-        current_doc_id = self.playlist[self.current_video_index].media.document.id
-
-        # Переключатель автовыбора: при нехватке скорости плеер сам
-        # перейдёт на вариант, который канал реально тянет.
-        auto = menu.addAction("Автовыбор качества по скорости")
-        auto.setCheckable(True)
-        auto.setChecked(self._auto_quality)
-        auto.toggled.connect(self._set_auto_quality)
-        menu.addSeparator()
-
-        # Ориентир: сколько Мбит/с реально тянет канал (по замеру загрузки).
-        speed_mbps = (self._speed_bps * 8) / 1_000_000 if self._speed_bps > 0 else 0.0
-        if speed_mbps > 0:
-            head = menu.addAction(f"Канал: ~{speed_mbps:.1f} Мбит/с")
-            head.setEnabled(False)
-            menu.addSeparator()
-
-        for q in qualities:
-            size_mb = q['size']
-            dur = q.get('duration') or 0
-            bitrate = (size_mb * 8 / dur) if dur > 0 else 0.0
-
-            label = f"{q['quality']} · {size_mb:.1f} МБ"
-            if bitrate > 0:
-                label += f" · {bitrate:.1f} Мбит/с"
-                if speed_mbps > 0:
-                    if bitrate <= speed_mbps * 0.85:
-                        label += "   ✓ пойдёт"
-                    else:
-                        label += "   ⚠ будут паузы"
-
-            if q['doc_id'] == current_doc_id:
-                label = "▶ " + label
-
-            action = menu.addAction(label)
-            action.triggered.connect(
-                lambda checked, msg=q['message']: self.play_selected_quality(msg)
-            )
-
-        btn_pos = self.bar.btn_quality.mapToGlobal(QPoint(0, 0))
-        menu.exec(btn_pos)
-
-    def play_selected_quality(self, message):
-        """Переключает на выбранный вариант качества с той же позиции."""
-        index = None
-        for i, msg in enumerate(self.playlist):
-            if msg.id == message.id:
-                index = i
-                break
-
-        if index is None:
-            # Вариант нашёлся не в списке канала (например, отдельным поиском
-            # по истории сообщений). Раньше клик по нему молча ничего не
-            # делал — подставляем его на место текущего ролика.
-            index = self.current_video_index
-            if index < 0 or index >= len(self.playlist):
-                return
-            self.playlist[index] = message
-            try:
-                self._playlist_token = self.backend.pin_playlist(self.playlist)
-            except Exception:
-                pass
-
-        # Смена качества не должна начинать ролик с нуля.
-        try:
-            pos = float(self._mpv_get('time-pos') or 0.0)
-        except Exception:
-            pos = 0.0
-        self._pending_seek = pos if pos > 0.5 else None
-        self.play_video(index)
-
-    def _set_auto_quality(self, enabled):
-        self._auto_quality = bool(enabled)
-        try:
-            self.backend.set_setting('auto_quality', self._auto_quality)
-        except Exception:
-            pass
-        self.show_osd(
-            "Автовыбор качества: вкл" if enabled else "Автовыбор качества: выкл"
-        )
 
     def _restore_bar_to_layout(self):
         """Возвращает панель управления в раскладку главного окна.
@@ -2349,7 +2208,6 @@ class PlayerWindow(QMainWindow):
             ("M", self.toggle_mute),
             ("N", self.play_next),
             ("P", self.play_prev),
-            ("Q", self.show_quality_menu),
             # Скорость: [ медленнее, ] быстрее, \ — снова обычная.
             ("[", lambda: self._change_speed(1 / config.SPEED_STEP)),
             ("]", lambda: self._change_speed(config.SPEED_STEP)),

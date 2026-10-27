@@ -1891,8 +1891,6 @@ class MainWindow(QMainWindow):
         try:
             if key == 'hwdec':
                 pw.set_hwdec(int(value))
-            elif key == 'auto_quality':
-                pw._auto_quality = bool(value)
             elif key == 'playlist_panel':
                 if bool(getattr(pw, '_playlist_shown', False)) != bool(value):
                     pw._toggle_playlist()

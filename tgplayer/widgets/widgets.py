@@ -370,7 +370,6 @@ class ControlBar(QWidget):
         self.btn_play = QPushButton()
         self.btn_ff = QPushButton()
         self.btn_next = QPushButton()
-        self.btn_quality = QPushButton()
         self.btn_mute = QPushButton()
         self.vol_slider = ClickableSlider(Qt.Orientation.Horizontal)
         self.btn_pip = QPushButton()
@@ -385,13 +384,11 @@ class ControlBar(QWidget):
         self.btn_play.setIcon(icons.get_icon('play'))
         self.btn_ff.setIcon(icons.get_icon('ff'))
         self.btn_next.setIcon(icons.get_icon('next'))
-        self.btn_quality.setIcon(icons.get_icon('quality'))
         self.btn_mute.setIcon(icons.get_icon('vol'))
         self.btn_pip.setIcon(icons.get_icon('pip'))
         self.btn_fs.setIcon(icons.get_icon('fs'))
         self.btn_list.setIcon(icons.get_icon('list'))
 
-        self.btn_quality.setToolTip("Выбор качества")
         self.btn_pip.setToolTip("Картинка в картинке (I)")
         self.btn_list.setToolTip("Список канала (L)")
 
@@ -400,7 +397,7 @@ class ControlBar(QWidget):
         self.vol_slider.setFixedWidth(90)
 
         for b in (self.btn_prev, self.btn_rew, self.btn_play,
-                  self.btn_ff, self.btn_next, self.btn_quality, self.btn_mute,
+                  self.btn_ff, self.btn_next, self.btn_mute,
                   self.btn_pip, self.btn_fs, self.btn_list):
             b.setFixedSize(34, 30)
             b.setIconSize(QSize(20, 20))
@@ -420,10 +417,12 @@ class ControlBar(QWidget):
         row2.addStretch()
         row2.addWidget(self.lbl_cache)
         row2.addStretch()
-        row2.addWidget(self.btn_quality)
+        # Автоспроизведение — рядом с громкостью, слева от неё. Кнопки
+        # выбора качества больше нет: в Telegram у видео почти всегда одно
+        # качество, и меню из одного пункта только мешает.
+        row2.addWidget(self.btn_auto)
         row2.addWidget(self.btn_mute)
         row2.addWidget(self.vol_slider)
-        row2.addWidget(self.btn_auto)
         row2.addWidget(self.btn_pip)
         row2.addWidget(self.btn_fs)
         outer.addLayout(row2)
