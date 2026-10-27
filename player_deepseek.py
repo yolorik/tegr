@@ -31,11 +31,24 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# Каталог, рядом с которым живут ДАННЫЕ (сессия, настройки, история, кеш).
+#
+# Важно: в собранном PyInstaller onefile-приложении __file__ указывает во
+# временную папку распаковки (sys._MEIPASS), которая удаляется при выходе.
+# Раньше каталог данных брался именно оттуда — то есть из папки, которой
+# после закрытия программы нет. Программа каждый раз начинала будто заново,
+# а настройки и сессия, положенные рядом с .exe, не подхватывались вовсе.
+# В сборке ориентир — только путь к самому .exe.
+if getattr(sys, 'frozen', False):
+    _DATA_HOME = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _DATA_HOME = _HERE
+
 from tgplayer.core import paths as _paths
-_paths.set_launch_dir(_HERE)
+_paths.set_launch_dir(_DATA_HOME)
 # Пакет ещё не импортирован, а config уже читает app_dir() — передаём
 # каталог сразу, иначе он возьмёт каталог пакета.
-_paths.set_base_dir(_HERE)
+_paths.set_base_dir(_DATA_HOME)
 
 from tgplayer.core import log as _log
 # Печать в журнал — до всех остальных импортов: сообщения о загрузке mpv
