@@ -26,11 +26,18 @@
 """
 
 MAJOR = 2
-MINOR = 4
+MINOR = 5
 PATCH = 0
 LOADER = 'd'
 
 VERSION = f"{MAJOR}.{MINOR}.{PATCH}{LOADER}"
+
+# Дата выпуска этой версии. Год «производства» показывается в настройках.
+RELEASE_DATE = '27 октября 2026'
+RELEASE_YEAR = 2026
+
+# Название программы. Одно место — чтобы не разъезжалось по файлам.
+APP_NAME = 'TGPlayer'
 
 # Расшифровка для журнала и окна «О программе».
 LOADER_TITLES = {
@@ -42,7 +49,7 @@ LOADER_TITLES = {
 
 
 def version_text():
-    """Короткая строка версии: «2.4.0d»."""
+    """Короткая строка версии: «2.5.0d»."""
     return VERSION
 
 
@@ -52,6 +59,21 @@ def full_version_text():
     return f"{VERSION} (загрузчик {LOADER}: {loader})"
 
 
-def window_title(base='TG Player'):
+def window_title(base=None):
     """Заголовок окна с версией."""
-    return f"{base} {VERSION}"
+    return f"{base or APP_NAME} {VERSION}"
+
+
+def about_text():
+    """Текст блока «О программе» для настроек.
+
+    Собирается из отдельных строк, чтобы в окне настроек он выглядел как
+    обычный блок сведений, а не как одна длинная строка.
+    """
+    return (
+        f"{APP_NAME} {VERSION}",
+        f"Выпуск: {RELEASE_DATE} (сборка {RELEASE_YEAR} года)",
+        f"Схема загрузки: {LOADER} — {LOADER_TITLES.get(LOADER, 'неизвестная')}",
+        "Сделано с помощью ИИ (DeepSeek).",
+        "Telegram-клиент: Telethon. Видео: libmpv.",
+    )

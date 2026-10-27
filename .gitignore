@@ -6,9 +6,9 @@ __pycache__/
 *.pyo
 
 # Сборка: пересобирается скриптом, весит сотни мегабайт.
-build_v2/
-dist_v2/
-installer/TGPlayerV2_Setup.exe
+build/
+dist/
+installer/*_Setup.exe
 
 # Библиотеки: 120 МБ, лежат в поставке и пересборке не нужны.
 libmpv-2.dll

@@ -139,6 +139,22 @@ class LoginDialog(QDialog):
         return self.edit.text().strip()
 
 
+class NoWheelComboBox(QComboBox):
+    """Выпадающий список, который не реагирует на колесо мыши.
+
+    По умолчанию QComboBox переключает значение от любого прокрута — даже
+    когда он не в фокусе. Человек крутит колесо, чтобы прокрутить окно
+    настроек, а вместо этого меняется масштаб интерфейса или тема. Особенно
+    неприятно с масштабом: окно перерисовывается прямо под курсором, и
+    попытка доскроллить превращается в погоню за уезжающим значением.
+
+    Колесо пропускаем к родителю — пусть прокручивается страница.
+    """
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class SettingsDialog(QDialog):
     """Настройки плеера — всё, что можно включить или выключить.
 
@@ -219,7 +235,7 @@ class SettingsDialog(QDialog):
         look_lay = QFormLayout(look)
         look_lay.setContentsMargins(12, 8, 12, 12)
         look_lay.setSpacing(8)
-        self.cmb_theme = QComboBox()
+        self.cmb_theme = NoWheelComboBox()
         for key, title in theme.THEME_TITLES.items():
             self.cmb_theme.addItem(title, key)
         pos = self.cmb_theme.findData(values.get('theme', theme.DEFAULT_THEME))
@@ -248,7 +264,7 @@ class SettingsDialog(QDialog):
 
         # Масштаб интерфейса: на маленьком экране крупный шрифт читается
         # лучше, а на большом мониторе удобнее уменьшить.
-        self.cmb_scale = QComboBox()
+        self.cmb_scale = NoWheelComboBox()
         for percent in range(theme.UI_SCALE_RANGE[0], theme.UI_SCALE_RANGE[1] + 1, 10):
             self.cmb_scale.addItem(f'{percent}%', percent)
         try:
@@ -277,7 +293,7 @@ class SettingsDialog(QDialog):
         play_lay.setSpacing(8)
         hw_row = QHBoxLayout()
         hw_row.addWidget(QLabel('Декодирование видео:'))
-        self.cmb_hwdec = QComboBox()
+        self.cmb_hwdec = NoWheelComboBox()
         for i, mode in enumerate(config.HWDEC_MODES):
             self.cmb_hwdec.addItem(mode[1], i)
         try:
@@ -293,7 +309,7 @@ class SettingsDialog(QDialog):
         # Шаг перемотки стрелками: у каждого свой привычный размер.
         seek_row = QHBoxLayout()
         seek_row.addWidget(QLabel('Шаг перемотки:'))
-        self.cmb_seek = QComboBox()
+        self.cmb_seek = NoWheelComboBox()
         for step in config.SEEK_STEPS:
             self.cmb_seek.addItem('%d с' % step, step)
         try:
@@ -347,6 +363,25 @@ class SettingsDialog(QDialog):
         btn_clear.clicked.connect(lambda: self.changed.emit('clear_cache', True))
         cache_lay.addWidget(btn_clear, 0, Qt.AlignmentFlag.AlignLeft)
         body.addWidget(cache)
+
+        # --- О программе ---
+        #
+        # Последним блоком, чтобы не мешал настройкам. Первая строка
+        # крупнее остальных: по ней видно версию, с которой человек
+        # работает, — раньше сборки различали по дате файла, и это путало.
+        about = QGroupBox('О программе')
+        about_lay = QVBoxLayout(about)
+        about_lay.setContentsMargins(12, 8, 12, 12)
+        about_lay.setSpacing(4)
+        for i, line in enumerate(version.about_text()):
+            lbl = QLabel(line)
+            lbl.setWordWrap(True)
+            if i == 0:
+                lbl.setObjectName('about_title')
+            else:
+                lbl.setObjectName('hint')
+            about_lay.addWidget(lbl)
+        body.addWidget(about)
 
         body.addStretch(1)
         # Кнопка живёт вне прокрутки: до неё надо дотягиваться всегда.

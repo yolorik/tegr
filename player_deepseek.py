@@ -190,7 +190,7 @@ _fmt_speed = _utils.fmt_speed
 version = _version
 VERSION = _version.VERSION
 # Название программы: идёт в заголовок окна и в подписи.
-APP_TITLE = 'TG Player'
+APP_TITLE = _version.APP_NAME
 
 # libmpv и его ошибка загрузки: раньше жили в этом же модуле, теперь в
 # tgplayer/system/mpv_boot.py. Держим под прежними именами — на них
@@ -275,7 +275,7 @@ def _setup_logging():
     Здесь только шапка о запуске и перехватчик.
     """
     log('=' * 60)
-    log('Запуск TG Player %s' % version.version_text())
+    log('Запуск %s %s' % (version.APP_NAME, version.version_text()))
     log('версия: %s' % version.full_version_text())
     log('версия Python %s' % sys.version.split()[0])
     log('каталог программы: %s' % _app_dir())

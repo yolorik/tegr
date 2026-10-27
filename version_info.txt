@@ -1,6 +1,6 @@
 # Свойства файла для Windows: «Подробно» в свойствах .exe покажет версию.
 #
-# Значения подставляет _build_v2.ps1 из tgplayer/core/version.py — руками
+# Значения подставляет _build.ps1 из tgplayer/core/version.py — руками
 # здесь ничего менять не нужно. Если править, то только сам шаблон.
 
 VSVersionInfo(
@@ -19,14 +19,14 @@ VSVersionInfo(
       [
         StringTable(
           u'041904E3',
-          [StringStruct(u'CompanyName', u'TG Player'),
+          [StringStruct(u'CompanyName', u'TGPlayer'),
            StringStruct(u'FileDescription', u'TG Player — просмотр видео из Telegram'),
-           StringStruct(u'FileVersion', u'2.4.0d'),
-           StringStruct(u'InternalName', u'TGPlayerV2'),
+           StringStruct(u'FileVersion', u'2.5.0d'),
+           StringStruct(u'InternalName', u'TGPlayer'),
            StringStruct(u'LegalCopyright', u''),
-           StringStruct(u'OriginalFilename', u'TGPlayerV2.exe'),
+           StringStruct(u'OriginalFilename', u'TGPlayer.exe'),
            StringStruct(u'ProductName', u'TG Player'),
-           StringStruct(u'ProductVersion', u'2.4.0d'),
+           StringStruct(u'ProductVersion', u'2.5.0d'),
            StringStruct(u'Comments', u'схема загрузчика d: возврат к исходной схеме после отката')])
       ]
     ),

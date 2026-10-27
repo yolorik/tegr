@@ -1,8 +1,10 @@
 $ErrorActionPreference = 'Continue'
-$nm = 'TG' + 'Player' + 'V2'
+# Имя сборки и папка — без приставки V2: она была нужна, когда рядом жила
+# первая версия, и давно неактуальна.
+$nm = 'TGPlayer'
 $mod = 'player' + '_deepseek'
-$dst = 'C:\tgplayer\dist_v2\TGPlayerV2'
-$bak = 'C:\tgplayer\_v2_data'
+$dst = 'C:\tgplayer\dist\TGPlayer'
+$bak = 'C:\tgplayer\_build_data'
 $data = @('my_player_session.session', 'proxy.txt', 'history.json', 'settings.json')
 
 $p = Get-Process -Name $nm -ErrorAction SilentlyContinue
@@ -17,7 +19,7 @@ foreach ($f in $data) {
     }
 }
 
-Copy-Item "C:\tgplayer\${mod}.py" "C:\tgplayer\${mod}_v2.py" -Force
+Copy-Item "C:\tgplayer\${mod}.py" "C:\tgplayer\${mod}_build.py" -Force
 
 # --- версия: берём из единственного источника, tgplayer/core/version.py ---
 $py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
@@ -27,7 +29,7 @@ $verNote = ($verLine | Select-Object -Skip 1) -join ' '.Trim()
 $nums = ($ver -replace '[^0-9.]', '').Split('.')
 while ($nums.Count -lt 3) { $nums += '0' }
 $vtuple = "$($nums[0]), $($nums[1]), $($nums[2]), 0"
-Write-Output "версия сборки: $ver  ($verNote)"
+Write-Output "версия сборки: $ver"
 
 $vi = Get-Content 'C:\tgplayer\version_info.txt' -Raw -Encoding UTF8
 $vi = $vi -replace 'filevers=\([^)]*\)', "filevers=($vtuple)"
@@ -50,8 +52,8 @@ if ($verNote) {
     --hidden-import mpv --hidden-import cryptg `
     --hidden-import python_socks --collect-submodules python_socks --hidden-import socks `
     --collect-submodules telethon --log-level WARN `
-    --distpath C:\tgplayer\dist_v2 --workpath C:\tgplayer\build_v2 --specpath C:\tgplayer\build_v2 `
-    "C:/tgplayer/${mod}_v2.py" 2>&1 | Select-Object -Last 1
+    --distpath C:\tgplayer\dist --workpath C:\tgplayer\build --specpath C:\tgplayer\build `
+    "C:/tgplayer/${mod}_build.py" 2>&1 | Select-Object -Last 1
 Write-Output "build exit=$LASTEXITCODE"
 
 foreach ($f in $data) {

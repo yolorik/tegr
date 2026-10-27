@@ -25,7 +25,7 @@ SESSION_NAME = os.path.join(BASE_DIR, 'my_player_session')
 CACHE_DIR = os.path.join(BASE_DIR, 'stream_cache')
 
 # Название программы: идёт в заголовок окна и в подписи.
-APP_TITLE = 'TG Player'
+APP_TITLE = 'TGPlayer'
 
 # Файл истории просмотров рядом с программой.
 HISTORY_FILE = 'history.json'

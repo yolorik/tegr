@@ -1,4 +1,4 @@
-; Установщик TGPlayerV2.
+; Установщик TGPlayer.
 ;
 ; Куда ставится: PrivilegesRequired=lowest, поэтому {autopf} раскрывается
 ; в %LocalAppData%\Programs. Это принципиально: программа пишет рядом с
@@ -15,9 +15,9 @@
 ; (tgplayer/core/version.py): 2.4.0d, где буква — схема загрузчика.
 ; Сверяйте при сборке: установщик обёртывает уже собранный .exe, и если
 ; .exe пересобрали с новой версией, здесь её надо поднять руками.
-#define AppVersion "2.4.0d"
-#define AppExe "TGPlayerV2.exe"
-#define SrcDir "C:\tgplayer\dist_v2\TGPlayerV2"
+#define AppVersion "2.5.0d"
+#define AppExe "TGPlayer.exe"
+#define SrcDir "C:\tgplayer\dist\TGPlayer"
 
 [Setup]
 AppId={{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}
@@ -29,7 +29,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=C:\tgplayer\installer
-OutputBaseFilename=TGPlayerV2_Setup
+OutputBaseFilename=TGPlayer_Setup
 SetupIconFile=C:\tgplayer\tgplayer.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Continue'
 $iscc = 'C:\Users\yolorik\AppData\Local\Programs\Inno Setup 6\ISCC.exe'
-$out = 'C:\tgplayer\installer\TGPlayerV2_Setup.exe'
+$out = 'C:\tgplayer\installer\TGPlayer_Setup.exe'
 
 # ISCC regularly trips over a locked output file right after creating it
 # (antivirus holds it open), so retry a few times.
