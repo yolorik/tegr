@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
     QWidget, QWidgetAction)
 
-from ..core import config, history, log, paths, proxy, theme, utils
+from ..core import config, history, log, paths, proxy, theme, utils, version
 from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
@@ -990,7 +990,9 @@ class MainWindow(QMainWindow):
         self._search_timer.setInterval(450)
         self._search_timer.timeout.connect(self._run_channel_search)
 
-        self.setWindowTitle(config.APP_TITLE)
+        # Версия в заголовке: по ней видно, какая сборка запущена, без
+        # лазания в свойства файла и по датам.
+        self.setWindowTitle(version.window_title(config.APP_TITLE))
         icon = paths.load_app_icon()
         if icon is not None:
             self.setWindowIcon(icon)
@@ -1287,8 +1289,8 @@ class MainWindow(QMainWindow):
         # окне, что и тему, и пересобирать стиль надо целиком.
         try:
             cfg = self._settings_dict()
-            theme.set_theme.custom_colors(cfg.get('custom_bg'), cfg.get('custom_accent'))
-            theme.set_theme.ui_scale(cfg.get('ui_scale', theme.UI_SCALE_DEFAULT))
+            theme.set_custom_colors(cfg.get('custom_bg'), cfg.get('custom_accent'))
+            theme.set_ui_scale(cfg.get('ui_scale', theme.UI_SCALE_DEFAULT))
         except Exception:
             pass
         app = QApplication.instance()
@@ -1385,14 +1387,14 @@ class MainWindow(QMainWindow):
             # в слоте улетал TypeError — а такое исключение PyQt6 завершает
             # мгновенным закрытием программы, без единого слова в логе.
             if key == 'custom_bg':
-                theme.set_theme.custom_colors(bg=value)
+                theme.set_custom_colors(bg=value)
             else:
-                theme.set_theme.custom_colors(accent=value)
+                theme.set_custom_colors(accent=value)
             self._apply_theme()
             return
         if key == 'ui_scale':
             self.backend.set_setting('ui_scale', int(value))
-            theme.set_theme.ui_scale(value)
+            theme.set_ui_scale(value)
             self._apply_theme()
             self.set_status('Масштаб интерфейса: %d%%' % theme.ui_scale())
             return

@@ -19,9 +19,32 @@ foreach ($f in $data) {
 
 Copy-Item "C:\tgplayer\${mod}.py" "C:\tgplayer\${mod}_v2.py" -Force
 
+# --- версия: берём из единственного источника, tgplayer/core/version.py ---
 $py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
+$verLine = & $py -c "import sys; sys.path.insert(0, r'C:\tgplayer'); from tgplayer.core import version as v; print(v.VERSION); print(v.LOADER_TITLES.get(v.LOADER, ''))"
+$ver = $verLine[0].Trim()
+$verNote = ($verLine | Select-Object -Skip 1) -join ' '.Trim()
+$nums = ($ver -replace '[^0-9.]', '').Split('.')
+while ($nums.Count -lt 3) { $nums += '0' }
+$vtuple = "$($nums[0]), $($nums[1]), $($nums[2]), 0"
+Write-Output "версия сборки: $ver  ($verNote)"
+
+$vi = Get-Content 'C:\tgplayer\version_info.txt' -Raw -Encoding UTF8
+$vi = $vi -replace 'filevers=\([^)]*\)', "filevers=($vtuple)"
+$vi = $vi -replace 'prodvers=\([^)]*\)', "prodvers=($vtuple)"
+$vi = $vi -replace "(?<=StringStruct\(u'FileVersion', u')[^']*", $ver
+$vi = $vi -replace "(?<=StringStruct\(u'ProductVersion', u')[^']*", $ver
+if ($verNote) {
+    $vi = $vi -replace "(?<=StringStruct\(u'Comments', u')[^']*", $verNote
+}
+# Пишем в UTF-8 без BOM: PyInstaller читает файл как обычный текст, и BOM
+# в начале ломает разбор первой строки (VSVersionInfo не распознаётся).
+[System.IO.File]::WriteAllText('C:\tgplayer\version_info_gen.txt', $vi,
+    (New-Object System.Text.UTF8Encoding $false))
+
 & $py -m PyInstaller --noconfirm --clean --windowed --name $nm `
     --icon C:\tgplayer\tgplayer.ico `
+    --version-file C:\tgplayer\version_info_gen.txt `
     --add-binary "C:\tgplayer\libmpv-2.dll;." `
     --add-binary "C:\tgplayer\vulkan-1.dll;." `
     --hidden-import mpv --hidden-import cryptg `

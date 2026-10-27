@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QVBoxLayout, QWidget)
 
-from ..core import config, history, log, paths, theme, utils
+from ..core import config, history, log, paths, theme, utils, version
 from ..core import settings as app_settings
 from ..icons import icons
 from ..system import mpv_boot
@@ -957,7 +957,31 @@ class PlayerWindow(QMainWindow):
         else:
             self.player['start'] = 'none'
 
+        # Снимаем паузу ПЕРЕД показом нового файла.
+        #
+        # mpv держит свойство pause между файлами. После того как ролик
+        # дошёл до конца с выключенным автоспроизведением, mpv оставался
+        # с pause=True; следующий файл запускался уже на паузе, и человек
+        # видел замерший первый кадр. Кнопка на панели при этом показывала
+        # «пауза» — то есть предлагала нажать, хотя видео и не играло.
+        # Ставим до play(), чтобы mpv не успел показать кадр и встать.
+        try:
+            self.player.pause = False
+        except Exception:
+            pass
+
         self.player.play(url)
+
+        # Значок на панели — сразу «пауза», потому что ролик пошёл.
+        #
+        # Иначе кнопка показывала состояние ОТ ПРОШЛОГО ролика. Событие
+        # pause от mpv приходит не всегда и не сразу: при запуске нового
+        # файла mpv мог не прислать его вовсе (свойство не изменилось —
+        # оно и не было включено), и на только что запущенной серии
+        # светился значок «play», хотя видео идёт. Человек жал кнопку,
+        # думая, что это пауза, — и ставил ролик на паузу.
+        self.bar.btn_play.setIcon(icons.get_icon('pause'))
+        self.pip_bar.set_player_state(False)
 
         print(f"[MPV] окно видео {self.video_widget.width()}x"
               f"{self.video_widget.height()}")
@@ -965,12 +989,10 @@ class PlayerWindow(QMainWindow):
         # Страховка: если видео-дорожка так и не определилась, перезапускаем
         # файл — это ровно то, что делает клавиша H.
         #
-        # Ждём 3.5 с, а не 1.2: при переключении серии картинка в норме
-        # появляется за 1.5-2 с (нужно скачать начало файла и хвост с
-        # индексом). Проверка на 1.2 с успевала сработать раньше времени,
-        # перезапускала ещё не разобравшийся ролик, отсчёт шёл заново —
-        # и старт растягивался.
-        QTimer.singleShot(3500, lambda: self._verify_vo(gen, 0))
+        # 1.2 с — как в сборке 18.10. Пробовали 3.5 с: проверка срабатывала
+        # позже, и на переключении серии зритель успевал увидеть чёрный экран
+        # дольше, чем нужно. Вторая попытка делает _verify_vo сам.
+        QTimer.singleShot(1200, lambda: self._verify_vo(gen, 0))
 
         # Пока пользователь смотрит текущий ролик, тихо начинаем следующий.
         # Ждём не полной докачки текущего (на файлах в сотни мегабайт это
@@ -1333,14 +1355,17 @@ class PlayerWindow(QMainWindow):
             return "Медиаплеер"
 
     def _window_title(self, index):
-        """Заголовок окна: название ролика + канал, откуда он играет.
+        """Заголовок окна: ролик, канал и версия программы.
 
-        По одному названию видео непонятно, из какого оно канала, а окно
-        плеера часто висит поверх других — заголовок читается с ходу.
+        Версия в заголовке нужна при разборе полётов: по скриншоту сразу
+        видно, какая сборка запущена. Раньше различали по дате файла, и
+        это регулярно путало — дата сборки ничего не говорит о том, что
+        внутри.
         """
         title = self._video_title(index)
         channel = getattr(self.backend, 'active_dialog_title', '') or ''
-        return f"{title} — {channel}" if channel else title
+        base = f"{title} — {channel}" if channel else title
+        return f"{base}  [{version.version_text()}]"
 
     def show_quality_menu(self):
         if (self.current_video_index < 0

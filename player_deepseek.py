@@ -91,6 +91,7 @@ from tgplayer.core import proxy as _proxy
 from tgplayer.core import settings as _settings_mod
 from tgplayer.core import theme as _theme
 from tgplayer.core import utils as _utils
+from tgplayer.core import version as _version
 from tgplayer.system import telethon_boot as _telethon
 
 from tgplayer.core.config import *          # noqa: F401,F403
@@ -171,6 +172,10 @@ save_window_geometry = _settings_mod.save_window_geometry
 backend_settings = _settings_mod.of_backend
 
 _fmt_speed = _utils.fmt_speed
+# Версия: единый источник — tgplayer/core/version.py. Здесь только имя,
+# чтобы её было видно как player_deepseek.VERSION.
+version = _version
+VERSION = _version.VERSION
 # Название программы: идёт в заголовок окна и в подписи.
 APP_TITLE = 'TG Player'
 
@@ -257,7 +262,8 @@ def _setup_logging():
     Здесь только шапка о запуске и перехватчик.
     """
     log('=' * 60)
-    log('Запуск TG Player')
+    log('Запуск TG Player %s' % version.version_text())
+    log('версия: %s' % version.full_version_text())
     log('версия Python %s' % sys.version.split()[0])
     log('каталог программы: %s' % _app_dir())
     log('файл журнала: %s' % log_path())
