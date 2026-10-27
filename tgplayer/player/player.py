@@ -485,20 +485,48 @@ class PlayerWindow(QMainWindow):
             except Exception:
                 pass
 
-            # Честная скорость: среднее по скользящему окну в несколько
-            # секунд. Мгновенный замер бесполезен — данные приходят кусками
-            # по 1 МБ, и точечное значение скачет 1.6 -> 0.4 на ровном канале.
+            # Честная скорость: среднее по скользящему окну.
+            #
+            # Окно было 3 секунды, и это давало «скорость в ноль» на ровном
+            # канале: данные приходят порциями, и если в окно попала пауза
+            # в полсекунды между порциями, среднее падало почти до нуля.
+            # Человек видел ноль и сообщение о низкой скорости при живом
+            # канале в 4.5 МБ/с.
+            #
+            # Теперь окно длиннее, а измеряем ещё и по крупному шагу: считаем
+            # от самой старой точки, но не меньше чем за секунду, и берём
+            # МАКСИМУМ из двух оценок — по текущему окну и по всему времени
+            # загрузки. Одна заминка не должна выглядеть как мёртвый канал.
             now = time.monotonic()
             net = e.get('speed_bytes', 0)
             self._speed_hist.append((now, net))
             while (len(self._speed_hist) >= 2
                    and now - self._speed_hist[0][0] > config.SPEED_WINDOW_SECS):
                 self._speed_hist.popleft()
+
+            window_bps = 0.0
             if len(self._speed_hist) >= 2:
                 t0, b0 = self._speed_hist[0]
                 dt = now - t0
-                if dt > 0.5:
-                    self._speed_bps = max(0.0, (net - b0) / dt)
+                if dt > 1.0:
+                    window_bps = max(0.0, (net - b0) / dt)
+
+            # Средняя за всю загрузку: показывает реальную пропускную
+            # способность, не реагируя на секундные провалы.
+            avg_bps = 0.0
+            st = e.get('started_ts')
+            if st:
+                elapsed = now - st
+                if elapsed > 2.0:
+                    avg_bps = e.get('downloaded_bytes', 0) / elapsed
+
+            # Скорость для интерфейса и для проверки битрейта — не ниже
+            # половины средней: если канал тянет, короткая пауза не должна
+            # выглядеть обрывом.
+            if avg_bps > 0:
+                self._speed_bps = max(window_bps, avg_bps * 0.5)
+            else:
+                self._speed_bps = window_bps
 
             # Раз в 10 секунд запоминаем, где остановились: даже если
             # программу закрыть аварийно, позиция останется.
@@ -509,26 +537,28 @@ class PlayerWindow(QMainWindow):
             if pct >= 100:
                 self.bar.lbl_cache.setText("Кэш 100%")
             else:
-                # Средняя за всю загрузку: показывает реальную скорость,
-                # в отличие от мгновенной, которая скачет на всплесках.
-                avg_bps = 0.0
-                st = e.get('started_ts')
-                if st:
-                    elapsed = time.monotonic() - st
-                    if elapsed > 1.0:
-                        avg_bps = e.get('downloaded_bytes', 0) / elapsed
                 avg_txt = f" · ср. {utils.fmt_speed(avg_bps)}" if avg_bps > 0 else ""
                 self.bar.lbl_cache.setText(
                     f"Кэш {pct}% · {utils.fmt_speed(self._speed_bps)}{avg_txt}"
                 )
 
-            # Один раз на ролик проверяем, влезает ли битрейт в канал.
-            # Иначе видео будет постоянно вставать на буферизацию.
-            if (not self._warned_slow
-                    and self._cur_bitrate_mbps > 0
-                    and self._speed_bps > 0):
+            # Проверяем, влезает ли битрейт в канал.
+            #
+            # Раньше хватало ОДНОГО замера ниже битрейта, и флаг
+            # _warned_slow взводился навсегда: сообщение «будут паузы»
+            # появлялось после первой же секундной заминки, хотя канал
+            # тянул втрое больше нужного. Теперь требуем, чтобы скорость
+            # была низкой СТАБИЛЬНО — несколько проверок подряд.
+            if self._cur_bitrate_mbps > 0 and self._speed_bps > 0:
                 speed_mbps = self._speed_bps * 8 / 1_000_000
                 if self._cur_bitrate_mbps > speed_mbps * 1.2:
+                    self._slow_checks = getattr(self, '_slow_checks', 0) + 1
+                else:
+                    # Скорость в норме — счёт начинается заново.
+                    self._slow_checks = 0
+
+                if (not self._warned_slow
+                        and self._slow_checks >= config.SLOW_CHECKS_BEFORE_WARN):
                     self._warned_slow = True
 
                     # Автовыбор: переключаем на вариант, который канал тянет.

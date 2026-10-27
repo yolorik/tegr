@@ -913,6 +913,14 @@ class TelegramBackend(QObject):
                 # воркеров связь не рвёт, поэтому по данным её не видно.
                 await self._revive_workers()
 
+                # И что воркеров хватает: если кто-то завис на паузе,
+                # остальные не должны стоять. Держим загрузку занятой.
+                for _e in list(self.cache.values()):
+                    try:
+                        self._ensure_busy(_e)
+                    except Exception:
+                        pass
+
                 # Значок связи обновляем на каждом такте: обрыв мог
                 # случиться между проверками, а состояние должно быть
                 # видно сразу. Пока идёт перебор способов, не вмешиваемся:
@@ -2347,6 +2355,44 @@ class TelegramBackend(QObject):
             else:
                 hi = mid - 1
         return lo
+
+    def _ensure_busy(self, e):
+        """Держит воркеры занятыми, когда один завис на паузе.
+
+        Замеры показали важную вещь: одна порция приходит за 0.11 с, но
+        иногда поток замирает на десятки секунд. Если оба воркера в такой
+        момент висят на паузе, скорость падает в ноль и стоит, пока они
+        не очнутся.
+
+        Лечим просто: если рабочий кусок есть в очереди, а свободных
+        воркеров нет или их число меньше обычного (кто-то завис), берём
+        и запускаем ещё одного. Лишний воркер живёт недолго: как только
+        он упрётся в пустую очередь или файл докачается, он выйдет сам.
+
+        Верхний предел есть: больше config.MAX_EXTRA_WORKERS сверх нормы
+        не запускаем, иначе Telegram начнёт душить все соединения.
+        """
+        if e.get('complete') or e.get('error') or e.get('removed'):
+            return
+        queue = e.get('queue')
+        if queue is None or queue.empty():
+            return
+
+        live = [t for t in e.get('tasks', []) if not t.done()]
+        extra = e.get('extra_workers', 0)
+        if len(live) >= config.PARALLEL_WORKERS + extra:
+            return
+        if extra >= config.MAX_EXTRA_WORKERS:
+            return
+
+        e['extra_workers'] = extra + 1
+        print(f"[Кэш] добавляю воркер: живых {len(live)}, в очереди "
+              f"{queue.qsize()} кусков")
+        task = self.loop.create_task(
+            self._cache_worker(e.get('document'), e, queue,
+                               config.PARALLEL_WORKERS + extra, 0.0)
+        )
+        e['tasks'].append(task)
 
     @staticmethod
     def _index_at_end(path, size):
