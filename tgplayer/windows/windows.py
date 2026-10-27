@@ -10,7 +10,11 @@ import base64
 import ctypes
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,11 +27,11 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
     QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
     QScrollArea, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
     QWidget, QWidgetAction)
 
-from ..core import config, history, log, paths, proxy, theme, utils, version
+from ..core import config, history, log, paths, proxy, theme, updates, utils, version
 from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
@@ -153,6 +157,90 @@ class NoWheelComboBox(QComboBox):
 
     def wheelEvent(self, event):
         event.ignore()
+
+
+class UpdateDialog(QDialog):
+    """Предложение обновиться до новой версии.
+
+    Показывает, что нового, и две кнопки: обновить сейчас или отложить.
+    Скачивание начинается только по нажатию — молча ничего не тянем.
+    Отдельная галочка «не предлагать эту версию»: если новая сборка
+    окажется хуже, человек откатится и не должен получать предложение
+    обновиться обратно при каждом запуске.
+    """
+
+    def __init__(self, parent, info, current_version):
+        super().__init__(parent)
+        self.setWindowTitle('Доступно обновление')
+        self.setMinimumWidth(520)
+        self._info = info
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 14)
+        root.setSpacing(10)
+
+        title = QLabel(f"TGPlayer {info.tag.lstrip('vV')}")
+        title.setObjectName('about_title')
+        root.addWidget(title)
+
+        sub = QLabel(f"У вас {current_version}. Доступна новая версия.")
+        sub.setObjectName('hint')
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+
+        # Что нового. Описание релиза на GitHub — обычный markdown; теги
+        # срезаем, чтобы в окне не было звёздочек и решёток.
+        notes = self._plain_notes(info.notes)
+        if notes:
+            box = QPlainTextEdit()
+            box.setReadOnly(True)
+            box.setPlainText(notes)
+            box.setMinimumHeight(180)
+            root.addWidget(box, 1)
+
+        if info.size:
+            size_mb = info.size / (1024 * 1024)
+            lbl = QLabel(f"Размер загрузки: {size_mb:.1f} МБ")
+            lbl.setObjectName('hint')
+            root.addWidget(lbl)
+
+        self.chk_skip = QCheckBox('Не предлагать эту версию снова')
+        root.addWidget(self.chk_skip)
+
+        row = QHBoxLayout()
+        self.btn_later = QPushButton('Позже')
+        self.btn_later.clicked.connect(self.reject)
+        self.btn_now = QPushButton('Скачать и установить')
+        self.btn_now.setObjectName('primary')
+        self.btn_now.setMinimumHeight(36)
+        self.btn_now.clicked.connect(self.accept)
+        row.addStretch(1)
+        row.addWidget(self.btn_later)
+        row.addWidget(self.btn_now)
+        root.addLayout(row)
+
+    @staticmethod
+    def _plain_notes(text):
+        """Убирает markdown-разметку из описания релиза."""
+        lines = []
+        for line in (text or '').splitlines():
+            line = line.strip()
+            if not line:
+                lines.append('')
+                continue
+            # «STABLE» — служебная метка канала, человеку она не нужна.
+            if line.upper() == 'STABLE':
+                continue
+            line = re.sub(r'^#{1,6}\s*', '', line)
+            line = re.sub(r'^[-*+]\s+', '• ', line)
+            line = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
+            line = re.sub(r'`(.+?)`', r'\1', line)
+            lines.append(line)
+        return '\n'.join(lines).strip()
+
+    @property
+    def skip_this_version(self):
+        return self.chk_skip.isChecked()
 
 
 class SettingsDialog(QDialog):
@@ -381,6 +469,33 @@ class SettingsDialog(QDialog):
             else:
                 lbl.setObjectName('hint')
             about_lay.addWidget(lbl)
+
+        # Обновления — здесь же, рядом со сведениями о версии.
+        upd_row = QHBoxLayout()
+        self.cmb_channel = NoWheelComboBox()
+        self.cmb_channel.addItem('Только проверенные (stable)', 'stable')
+        self.cmb_channel.addItem('Все сборки (beta)', 'beta')
+        pos_ch = self.cmb_channel.findData(
+            values.get('update_channel', 'stable'))
+        self.cmb_channel.setCurrentIndex(max(0, pos_ch))
+        self.cmb_channel.currentIndexChanged.connect(
+            lambda: self._emit('update_channel',
+                               self.cmb_channel.currentData()))
+        upd_row.addWidget(QLabel('Канал обновлений:'))
+        upd_row.addWidget(self.cmb_channel, 1)
+        about_lay.addLayout(upd_row)
+
+        self.chk_upd = QCheckBox('Проверять обновления при запуске')
+        self.chk_upd.setChecked(bool(values.get('check_updates', True)))
+        self.chk_upd.toggled.connect(
+            lambda on: self._emit('check_updates', bool(on)))
+        about_lay.addWidget(self.chk_upd)
+
+        btn_upd = QPushButton('Проверить обновления сейчас')
+        btn_upd.clicked.connect(
+            lambda: self.changed.emit('check_updates_now', True))
+        about_lay.addWidget(btn_upd, 0, Qt.AlignmentFlag.AlignLeft)
+
         body.addWidget(about)
 
         body.addStretch(1)
@@ -1246,6 +1361,13 @@ class MainWindow(QMainWindow):
     def _setting(self, key, default=None):
         return self._settings_dict().get(key, default)
 
+    def _set_setting_quiet(self, key, value):
+        """Сохраняет настройку без окна и без всплывающих сообщений."""
+        try:
+            self.backend.set_setting(key, value)
+        except Exception as ex:
+            print(f"[Настройки] не сохранилось «{key}»: {ex}")
+
     def _setup_tray(self):
         """Значок в системном трее — сюда сворачивается окно по крестику.
 
@@ -1344,6 +1466,134 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    # --- Обновления -----------------------------------------------------
+
+    def check_updates_silent(self):
+        """Проверка при запуске: тихо, в фоне, ошибки только в журнал.
+
+        Человек открыл программу, чтобы смотреть видео, а не читать про
+        обновления. Поэтому нет сети или GitHub молчит — просто молчим
+        тоже. Блокирующее окно о неудачной проверке раздражало бы.
+        """
+        if not self._setting('check_updates', True):
+            return
+        self._run_update_check(manual=False)
+
+    def check_updates_manual(self):
+        """Проверка по кнопке: здесь ответ показываем всегда."""
+        self._run_update_check(manual=True)
+
+    def _update_channel(self):
+        channel = self._setting('update_channel', 'stable')
+        return channel if channel in ('stable', 'beta') else 'stable'
+
+    def _run_update_check(self, manual):
+        """Запускает проверку в отдельном потоке, чтобы окно не замирало."""
+        channel = self._update_channel()
+
+        def worker():
+            try:
+                info, reason = updates.check(channel)
+            except Exception as ex:
+                info, reason = None, f'{type(ex).__name__}: {ex}'
+            # Возврат в поток Qt: диалоги можно показывать только оттуда.
+            QTimer.singleShot(
+                0, lambda: self._on_update_checked(info, reason, manual))
+
+        threading.Thread(target=worker, daemon=True,
+                         name='update-check').start()
+
+    def _on_update_checked(self, info, reason, manual):
+        if info is None:
+            print(f"[Обновление] {reason}")
+            if manual:
+                QMessageBox.information(
+                    self, 'Обновления',
+                    f'У вас последняя версия {version.VERSION}.\n\n{reason}' if
+                    'нет' in reason else f'Проверить не удалось: {reason}')
+            return
+
+        print(f"[Обновление] доступна {info.tag}")
+        # Эту версию уже отклонили — не пристаём повторно.
+        if not manual and self._setting('skipped_version', '') == info.tag:
+            print(f"[Обновление] {info.tag} ранее отклонена — пропускаю")
+            return
+        self._offer_update(info)
+
+    def _offer_update(self, info):
+        """Показывает окно с предложением обновиться."""
+        dlg = UpdateDialog(self, info, version.VERSION)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            if dlg.skip_this_version:
+                self._set_setting_quiet('skipped_version', info.tag)
+            return
+        if dlg.skip_this_version:
+            self._set_setting_quiet('skipped_version', info.tag)
+        self._download_and_install(info)
+
+    def _download_and_install(self, info):
+        """Скачивает установщик и запускает его.
+
+        Пока идёт скачивание, показываем окно с прогрессом без кнопок:
+        закрыть его нельзя, иначе непонятно, что происходит.
+        """
+        # Временная папка: установщик — временный файл, держать его рядом
+        # с программой незачем.
+        dest = os.path.join(tempfile.gettempdir(),
+                            f'TGPlayer_Setup_{info.tag.lstrip("vV")}.exe')
+
+        box = QMessageBox(self)
+        box.setWindowTitle('Загрузка обновления')
+        box.setText(f'Скачиваю TGPlayer {info.tag.lstrip("vV")}…')
+        box.setStandardButtons(QMessageBox.StandardButton.NoButton)
+        box.show()
+
+        def worker():
+            ok, msg = updates.download(info, dest)
+            QTimer.singleShot(0, lambda: (
+                box.close(), self._after_download(ok, msg, dest)))
+
+        threading.Thread(target=worker, daemon=True,
+                         name='update-download').start()
+
+    def _after_download(self, ok, msg, path):
+        if not ok:
+            print(f"[Обновление] скачать не удалось: {msg}")
+            QMessageBox.warning(self, 'Обновление',
+                                f'Не удалось скачать обновление.\n\n{msg}')
+            return
+        print(f"[Обновление] скачано, хеш {msg}")
+        answer = QMessageBox.question(
+            self, 'Обновление готово',
+            'Обновление скачано и проверено.\n\n'
+            'Сейчас программа закроется, установится новая версия и '
+            'запустится снова.\n\nПродолжить?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._launch_installer(path)
+
+    def _launch_installer(self, path):
+        """Запускает установщик и закрывает плеер.
+
+        Установщик не может перезаписать работающий .exe — файл занят, —
+        поэтому сначала заказываем закрытие программы, а установщик
+        запускаем так, чтобы он подождал две секунды. Без этого он
+        начинал копировать сразу и падал на заблокированном файле.
+        """
+        try:
+            subprocess.Popen([path, '/SILENT', '/SUPPRESSMSGBOXES',
+                              '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'])
+        except Exception as ex:
+            print(f"[Обновление] установщик не запустился: {ex}")
+            QMessageBox.warning(self, 'Обновление',
+                                f'Не удалось запустить установщик: {ex}')
+            return
+        print("[Обновление] установщик запущен, закрываю плеер")
+        # Небольшая пауза: установщику нужно время, чтобы начать, а плееру
+        # — корректно закрыть соединение с Telegram.
+        QTimer.singleShot(300, QApplication.instance().quit)
+
     def open_settings(self):
         """Окно настроек: всё, что можно включить или выключить."""
         dlg = SettingsDialog(self, self._settings_dict())
@@ -1387,6 +1637,14 @@ class MainWindow(QMainWindow):
             # Кнопка в настройках открывает то же меню, что и значок в
             # углу окна: одно место для правки, а не два.
             self._open_connection_menu()
+            return
+        if key == 'check_updates_now':
+            self.check_updates_manual()
+            return
+        if key in ('check_updates', 'update_channel'):
+            # Эти две живут только в файле настроек: применяются при
+            # следующей проверке, перерисовывать интерфейс не нужно.
+            self.backend.set_setting(key, value)
             return
         if key == 'clear_cache':
             self.clear_cache()
@@ -2340,6 +2598,12 @@ class MainWindow(QMainWindow):
             self.conn_button.refit()
         except Exception:
             pass
+        # Проверка обновлений — один раз за запуск и с задержкой: сначала
+        # человек должен увидеть каналы, а уже потом окно про обновление.
+        # Проверка идёт в отдельном потоке, окно не замирает.
+        if not getattr(self, '_update_check_started', False):
+            self._update_check_started = True
+            QTimer.singleShot(4000, self.check_updates_silent)
 
     def closeEvent(self, event):
         # Крестик может означать «свернуть в трей»: тогда окно просто
