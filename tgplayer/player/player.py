@@ -77,6 +77,9 @@ class PlayerWindow(QMainWindow):
         self._play_ts = 0.0
         self._closed = False
         self._play_gen = 0
+        # Поколение, для которого заведено авто-лечение картинки: таймер
+        # загрузки может сработать уже после переключения серии.
+        self._auto_fix_gen = 0
         self._current_doc_id = None
         self._next_doc_id = None
         self._speed_hist = deque()
@@ -469,6 +472,9 @@ class PlayerWindow(QMainWindow):
                     and doc.id not in self._auto_fixed_docs
                     and not self._closed):
                 self._auto_fixed_docs.add(doc.id)
+                # Запоминаем, для какого ролика завели лечение: таймер
+                # может сработать уже после переключения серии.
+                self._auto_fix_gen = self._play_gen
                 QTimer.singleShot(0, self._auto_heal_picture)
 
             # Скачанные участки на полосе прокрутки (как на YouTube).
@@ -2385,9 +2391,19 @@ class PlayerWindow(QMainWindow):
         Признак поломки — видео-дорожка не определилась (video-params/w
         пуст) или вывод не настроен. Тогда файл перезапускается: к этому
         моменту индекс в хвосте уже скачан, и дорожка находится. Это
-        ровно то, что делает клавиша H вручную. Повторяем один раз.
+        ровно то, что делает клавиша H вручную.
+
+        Проверка привязана к поколению воспроизведения. Без этого при
+        быстром переключении серий получался каскад: таймер, заведённый
+        для ПЕРВОГО ролика, стрелял уже на втором, видел пустую ширину
+        (новый файл ещё не разобрался) и перезапускал его. Перезапуск
+        ставил следующий таймер, тот снова перезапускал — и так четыре
+        раза подряд. Со стороны это выглядело как «переключил серию,
+        насыпало ошибок, картинка появилась через пять секунд».
         """
         if self._closed or self._play_gen != gen:
+            # Ролик уже другой: эта проверка относится к прошлому, и
+            # перезапускать по ней нельзя — перезапустим чужой файл.
             return
 
         configured = self._mpv_get('vo-configured')
@@ -2436,7 +2452,10 @@ class PlayerWindow(QMainWindow):
         print("[MPV] перезапускаю файл, чтобы перечитать индекс")
         self._pending_seek = pos if pos > 0.5 else None
         self.play_video(self.current_video_index)
-        QTimer.singleShot(1500, lambda: self._verify_vo(self._play_gen, 1))
+        # Повторную проверку ставим на поколение НОВОГО воспроизведения:
+        # play_video увеличил счётчик, и старая проверка уже не в счёт.
+        new_gen = self._play_gen
+        QTimer.singleShot(1500, lambda: self._verify_vo(new_gen, 1))
 
     def _auto_heal_picture(self):
         """Перезапускает текущий файл, если картинка так и не появилась.
@@ -2444,8 +2463,16 @@ class PlayerWindow(QMainWindow):
         Режим декодера не трогаем: раньше здесь вызывался toggle_hwdec, и
         каждый ролик переключал режим на следующий — 1080p/4K уезжали в
         софт-декодирование без видимой причины. Перебор оставлен клавише H.
+
+        Вызывается от таймера загрузки и может прийти с задержкой: пока
+        накапливались проценты, человек уже переключил серию. Поэтому
+        сначала смотрим, что это тот же ролик, для которого таймер
+        заводили — иначе лечили бы чужой файл.
         """
         if self._closed or self.current_video_index is None:
+            return
+        gen = getattr(self, '_auto_fix_gen', None)
+        if gen is not None and gen != self._play_gen:
             return
         # Картинка уже есть — лечить нечего.
         if self._mpv_get('video-params/w'):
