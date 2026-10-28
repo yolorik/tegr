@@ -145,40 +145,68 @@ class LoginDialog(QDialog):
         акцент и подложки нет, а в окне входа нужен полный знак — круг
         цвета темы и самолётик целиком поверх него.
 
-        Если файла нет, рисуем только круг: пусть окно останется опрятным.
+        Две тонкости, обе из-за реальных ошибок:
+
+        * Знак центрируем по его настоящим границам, а не по квадрату
+          картинки: самолётик смещён внутри неё, и от центрирования по
+          квадрату он уезжал вправо.
+
+        * Рисуем в увеличенном масштабе и уменьшаем сглаживанием. Если
+          рисовать сразу в 76 пикселей, края круга и знака получаются
+          ступенькой — это и было видно.
         """
-        pix = QPixmap(size, size)
+        scale = 4                      # запас по разрешению
+        big = size * scale
+        pix = QPixmap(big, big)
         pix.fill(Qt.GlobalColor.transparent)
         p = QPainter(pix)
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             try:
                 accent = QColor(theme.theme()['accent'])
             except Exception:
                 accent = QColor('#2f7fd6')
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(accent)
-            p.drawEllipse(QRectF(0, 0, size, size))
+            p.drawEllipse(QRectF(0, 0, big, big))
 
             path = paths.login_logo_path()
             if path:
                 plane = QPixmap(path)
                 if not plane.isNull():
-                    # Самолётик не должен выходить за круг: считаем вписанный
-                    # квадрат (сторона = size/√2 ≈ 0.707·size) и берём от
-                    # него 85% — так остаётся видимый край круга по бокам.
-                    # Раньше брали 72% от всего размера, и знак упирался в
-                    # границу, обрезаясь справа.
-                    inner = int(size * 0.707 * 0.85)
-                    scaled = plane.scaled(
-                        inner, inner,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation)
-                    p.drawPixmap((size - scaled.width()) // 2,
-                                 (size - scaled.height()) // 2, scaled)
+                    # Границы самого рисунка внутри файла: по ним и центрируем.
+                    bounds = plane.rect()
+                    img = plane.toImage()
+                    left = img.width()
+                    top = img.height()
+                    right = bottom = -1
+                    for y in range(img.height()):
+                        for x in range(img.width()):
+                            if img.pixelColor(x, y).alpha() > 20:
+                                left = min(left, x)
+                                right = max(right, x)
+                                top = min(top, y)
+                                bottom = max(bottom, y)
+                    if right > left and bottom > top:
+                        bounds = QRect(left, top, right - left + 1,
+                                       bottom - top + 1)
+
+                    # Самолётик занимает около 70% вписанного квадрата,
+                    # чтобы по краям круга оставалось поле.
+                    inner = int(big * 0.707 * 0.70)
+                    ratio = min(inner / bounds.width(), inner / bounds.height())
+                    draw_w = max(1, int(bounds.width() * ratio))
+                    draw_h = max(1, int(bounds.height() * ratio))
+                    p.drawPixmap(
+                        (big - draw_w) // 2, (big - draw_h) // 2, draw_w, draw_h,
+                        plane, bounds.x(), bounds.y(),
+                        bounds.width(), bounds.height())
         finally:
             p.end()
-        return pix
+        return pix.scaled(size, size,
+                          Qt.AspectRatioMode.IgnoreAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation)
 
     def _accept(self):
         if not self.edit.text().strip():
