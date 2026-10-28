@@ -439,12 +439,10 @@ class UpdateBanner(QWidget):
         self.btn_later.clicked.connect(self._on_later)
         row.addWidget(self.btn_later)
 
-        self.btn_close = QPushButton('✕')
-        self.btn_close.setFixedWidth(28)
-        self.btn_close.setMinimumHeight(30)
-        self.btn_close.setToolTip('Скрыть до следующего запуска')
-        self.btn_close.clicked.connect(self._on_later)
-        row.addWidget(self.btn_close)
+        # Отдельного крестика нет. Он дублировал «Позже» — обе кнопки
+        # скрывали полосу, — а выглядел при этом пустым квадратом: символ
+        # не влезал в отведённую ширину.
+        self.btn_close = None
 
         # Что сейчас показывает полоса: 'offer', 'downloading', 'ready'.
         self._state = 'offer'
@@ -461,7 +459,6 @@ class UpdateBanner(QWidget):
         self.btn_action.setText('Обновить')
         self.btn_action.show()
         self.btn_later.show()
-        self.btn_close.show()
         self.show()
 
     def show_progress(self, chunk, total):
@@ -482,10 +479,6 @@ class UpdateBanner(QWidget):
         self.btn_action.hide()
         self.btn_later.setText('Отмена')
         self.btn_later.show()
-        # Крестик на время загрузки убираем: скрыть полосу нельзя —
-        # загрузка всё равно идёт, и человек теряет из виду, что
-        # происходит. Отменить загрузку можно кнопкой «Отмена» рядом.
-        self.btn_close.hide()
 
     def show_ready(self):
         """Загрузка закончена: предлагаем перезапуститься."""
@@ -500,7 +493,6 @@ class UpdateBanner(QWidget):
         self.btn_action.show()
         self.btn_later.setText('Позже')
         self.btn_later.show()
-        self.btn_close.show()
         self.show()
 
     def show_error(self, text):
@@ -511,7 +503,6 @@ class UpdateBanner(QWidget):
         self.btn_action.hide()
         self.btn_later.setText('Скрыть')
         self.btn_later.show()
-        self.btn_close.show()
         self.show()
 
     def reset(self):
@@ -520,6 +511,15 @@ class UpdateBanner(QWidget):
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
 
+    def mousePressEvent(self, event):
+        """Клик по самой полосе не должен проваливаться вниз.
+
+        Полоса висит над списком каналов. Нажатие по её фону (не по
+        кнопке) без этого уходило в список — снаружи это выглядело как
+        «нажал на полосу, а открылся канал».
+        """
+        event.accept()
+
     def _on_action(self):
         if self._state == 'ready':
             self.restart.emit()
@@ -527,6 +527,17 @@ class UpdateBanner(QWidget):
             self.accepted.emit()
 
     def _on_later(self):
+        """Скрывает полосу.
+
+        Скрытие отложено на следующий такт: если убрать виджет прямо
+        внутри обработчика нажатия, событие ещё не дообработано, и клик
+        достаётся тому, что оказалось под полосой, — списку каналов.
+        Снаружи это выглядело так: нажал «Позже», а открылся канал и
+        загрузился список видео.
+        """
+        QTimer.singleShot(0, self._hide_and_report)
+
+    def _hide_and_report(self):
         self.hide()
         self.dismissed.emit(False)
 
