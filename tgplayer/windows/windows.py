@@ -71,10 +71,17 @@ class LoginDialog(QDialog):
         # иконки свой фон (квадратная синяя плитка), и поверх круглой
         # подложки он выглядел как вложенный квадрат другого оттенка.
         # Здесь — ровный круг акцентного цвета и белый самолётик поверх.
+        #
+        # Картинку готовим вчетверо крупнее видимого размера, а показывает
+        # её QLabel уже уменьшенной. При рисовании ровно в 76 пикселей край
+        # круга шёл ступенькой: дуга не попадала в целые пиксели. Запас по
+        # разрешению это убирает.
         logo = QLabel()
         logo.setFixedSize(76, 76)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setPixmap(self._logo_pixmap(76))
+        logo.setPixmap(self._logo_pixmap(76 * 4))
+        # QLabel сам уменьшает картинку плавно, если включить это свойство.
+        logo.setScaledContents(True)
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(logo)
@@ -204,6 +211,9 @@ class LoginDialog(QDialog):
                         bounds.width(), bounds.height())
         finally:
             p.end()
+        # Уменьшаем с явным сглаживанием. Без него пиксели выпадают
+        # ступенькой — на круге это заметнее всего, потому что его край
+        # идёт по дуге.
         return pix.scaled(size, size,
                           Qt.AspectRatioMode.IgnoreAspectRatio,
                           Qt.TransformationMode.SmoothTransformation)
