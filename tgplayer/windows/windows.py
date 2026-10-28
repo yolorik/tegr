@@ -461,6 +461,7 @@ class UpdateBanner(QWidget):
         self.btn_action.setText('Обновить')
         self.btn_action.show()
         self.btn_later.show()
+        self.btn_close.show()
         self.show()
 
     def show_progress(self, chunk, total):
@@ -481,6 +482,10 @@ class UpdateBanner(QWidget):
         self.btn_action.hide()
         self.btn_later.setText('Отмена')
         self.btn_later.show()
+        # Крестик на время загрузки убираем: скрыть полосу нельзя —
+        # загрузка всё равно идёт, и человек теряет из виду, что
+        # происходит. Отменить загрузку можно кнопкой «Отмена» рядом.
+        self.btn_close.hide()
 
     def show_ready(self):
         """Загрузка закончена: предлагаем перезапуститься."""
@@ -495,6 +500,7 @@ class UpdateBanner(QWidget):
         self.btn_action.show()
         self.btn_later.setText('Позже')
         self.btn_later.show()
+        self.btn_close.show()
         self.show()
 
     def show_error(self, text):
@@ -505,6 +511,7 @@ class UpdateBanner(QWidget):
         self.btn_action.hide()
         self.btn_later.setText('Скрыть')
         self.btn_later.show()
+        self.btn_close.show()
         self.show()
 
     def reset(self):
