@@ -59,9 +59,19 @@ def _data_home(app_home):
     Получилось — оставляем переносимый режим, как было. Не получилось —
     уходим в профиль пользователя, где писать можно всегда.
 
+    ВАЖНО: проверяем не только «пишется ли сейчас», но и «будет ли
+    писаться при обычном запуске». Установщик теперь всегда просит права
+    администратора, но САМА ПРОГРАММА запускается без них. Если положить
+    данные в Program Files под администратором, то при следующем обычном
+    запуске их не открыть. Поэтому системные папки определяем по пути, а
+    не по текущим правам.
+
     Проба дешёвая (один файл), выполняется один раз при старте и не
     затрагивает сами данные.
     """
+    if _needs_profile(app_home):
+        return _profile_dir(app_home)
+
     probe = os.path.join(app_home, '.tgplayer_write_test')
     try:
         with open(probe, 'w') as f:
@@ -71,7 +81,34 @@ def _data_home(app_home):
     except Exception:
         pass
 
-    # Рядом писать некуда — берём папку профиля.
+    return _profile_dir(app_home)
+
+
+def _needs_profile(app_home):
+    """True, если папка программы — системная, и данные туда класть нельзя.
+
+    Проверяем по пути, а не по правам: права при запуске бывают разными.
+    Установщик просит администратора и может записать в Program Files,
+    но сама программа запускается обычным пользователем и прочитать
+    оттуда свои файлы уже не сможет.
+    """
+    try:
+        target = os.path.normcase(os.path.abspath(app_home))
+    except Exception:
+        return False
+    for env in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432'):
+        root = os.environ.get(env)
+        if root and target.startswith(os.path.normcase(os.path.abspath(root))):
+            return True
+    # Windows и корень системного диска — тоже не место для данных.
+    windir = os.environ.get('windir')
+    if windir and target.startswith(os.path.normcase(os.path.abspath(windir))):
+        return True
+    return False
+
+
+def _profile_dir(app_home):
+    """Папка данных в профиле пользователя, с переносом старых файлов."""
     base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
     if not base:
         base = os.path.join(os.path.expanduser('~'), 'AppData', 'Local')

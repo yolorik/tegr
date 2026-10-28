@@ -1,18 +1,16 @@
 ; Установщик TGPlayer.
 ;
-; Куда ставится и с какими правами.
+; Права администратора запрашиваются ВСЕГДА.
 ;
-; Раньше стояло PrivilegesRequired=lowest, но путь по умолчанию брался из
-; {autopf} — а он раскрывается в Program Files. Установка падала с
-; «Отказано в доступе» (ошибка 5), потому что прав администратора не было.
+; Раньше здесь стояло PrivilegesRequired=lowest: установка шла без UAC, а
+; если прав не хватало, [Code] перезапускал установщик с повышением. На
+; деле это давало сбои: на части систем запрос прав не доходил, и
+; установщик молча закрывался, не создав даже временную папку. Диагностики
+; никакой — просто «ничего не произошло».
 ;
-; Теперь путь по умолчанию — {localappdata}\Programs, он доступен всегда,
-; и без прав, и с правами. Папку можно поменять в мастере: другой диск,
-; Program Files, что угодно. Если выбранный путь защищён, установщик сам
-; попросит повышение прав (см. [Code] ниже) и перезапустится.
-;
-; Проверено на установке в три места: в профиль, в Program Files и на
-; другой диск — везде без ошибок.
+; Теперь запрос прав один и сразу при запуске: Windows показывает обычное
+; окно UAC, и после согласия установщик работает с полными правами. Так
+; он может писать и в Program Files, и на другой диск, и в профиль.
 ;
 ; Что НЕ попадает в поставку: файл сессии Telegram, история просмотра,
 ; настройки и лог — это данные того компьютера, где собирался установщик.
@@ -33,24 +31,20 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=TGPlayer
-; {localappdata} доступен всегда — и без прав, и с правами. {autopf} тут
-; не годится: он раскрывается в Program Files, запись в который требует
-; администратора.
-DefaultDirName={localappdata}\Programs\{#AppName}
+; Путь по умолчанию: Program Files для всех пользователей, когда установка
+; идёт с правами администратора. {autopf} при таком режиме раскрывается
+; именно туда — и теперь это работает, потому что права уже есть.
+DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-; Установка без прав по умолчанию; мастер даёт выбрать «для всех
-; пользователей», и тогда Inno сам запросит UAC.
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog commandline
+; Права администратора запрашиваются всегда. Это главное изменение:
+; установщик не пытается работать без прав и не перезапускается потом.
+PrivilegesRequired=admin
 ; Разрешаем менять папку: кеш видео занимает гигабайты, и человек вправе
-; поставить программу на другой диск. В том числе можно указать
-; Program Files — установщик попросит права сам.
+; поставить программу на другой диск. Права на любую папку уже есть.
 DisableDirPage=no
-; Если выбранный путь недоступен на запись, установщик НЕ падает с
-; ошибкой 5, а сразу просит повышение прав.
 UsePreviousLanguage=no
-OutputDir=C:\tgplayer\installer
+; OutputDir задаёт _build_inst.ps1: установщик кладётся в releases\<версия>.
 OutputBaseFilename=TGPlayer_Setup
 SetupIconFile=C:\tgplayer\tgplayer.ico
 UninstallDisplayIcon={app}\{#AppExe}
@@ -91,54 +85,3 @@ Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
 ; Журнал тоже не удаляем: по нему разбирают сбои, и он нужен уже после
 ; того, как программу сняли.
 Type: filesandordirs; Name: "{app}\stream_cache"
-
-[Code]
-// Дополнительная страховка: если прав всё же не хватает (например, путь
-// на сетевом диске или в чужой папке), не даём дойти до ошибки 5, а
-// предлагаем повысить права прямо на странице выбора папки.
-
-function DirWritable(const Dir: String): Boolean;
-var
-  Probe: String;
-begin
-  Result := True;
-  if Dir = '' then
-    Exit;
-  if not ForceDirectories(Dir) then
-  begin
-    Result := False;
-    Exit;
-  end;
-  // SaveStringToFile возвращает False, если писать некуда — этого
-  // достаточно, чтобы понять про права доступа.
-  Probe := AddBackslash(Dir) + '.tgplayer_write_test';
-  Result := SaveStringToFile(Probe, 'test', False);
-  if Result then
-    DeleteFile(Probe);
-end;
-
-function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  ErrCode: Integer;
-begin
-  Result := True;
-  if CurPageID <> wpSelectDir then
-    Exit;
-  if IsAdmin then
-    Exit;
-  if DirWritable(WizardDirValue) then
-    Exit;
-  // Писать некуда и прав нет: объясняем и просим перезапуск с правами.
-  if MsgBox('В выбранную папку нельзя писать.' + #13#10#13#10 +
-            'Скорее всего, нужны права администратора. Перезапустить ' +
-            'установщик с запросом прав?', mbConfirmation, MB_YESNO) = IDYES then
-  begin
-    ShellExecAsOriginalUser('', ExpandConstant('{srcexe}'),
-      '/SILENT /DIR="' + WizardDirValue + '"', '', SW_SHOWNORMAL,
-      ewNoWait, ErrCode);
-    Result := False;
-    WizardForm.Close;
-  end
-  else
-    Result := False;
-end;

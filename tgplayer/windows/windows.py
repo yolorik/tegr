@@ -1507,6 +1507,28 @@ class MainWindow(QMainWindow):
         tray.activated.connect(self._on_tray_activated)
         tray.show()
         self.tray = tray
+        # Диагностика: видно, дошёл ли значок до оболочки. isVisible()
+        # остаётся True даже когда Windows значок не показала, поэтому
+        # дополнительно смотрим, есть ли у него место на экране.
+        print(f"[Трей] показан: visible={tray.isVisible()}, "
+              f"место={tray.geometry().x()}x{tray.geometry().y()}")
+        QTimer.singleShot(1500, self._check_tray_alive)
+
+    def _check_tray_alive(self):
+        """Проверяет через полторы секунды, что значок в трее жив.
+
+        Нужно для разбора случаев «иконки нет»: Windows может принять
+        значок и тут же его потерять (например, если оболочка ещё не
+        готова). По журналу видно, что произошло на самом деле.
+        """
+        tray = self.tray
+        if tray is None:
+            print("[Трей] значка нет вовсе")
+            return
+        geo = tray.geometry()
+        print(f"[Трей] через 1.5 с: visible={tray.isVisible()}, "
+              f"геометрия={geo.width()}x{geo.height()} "
+              f"в точке {geo.x()},{geo.y()}")
 
     @staticmethod
     def _fallback_tray_icon():
