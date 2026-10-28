@@ -93,11 +93,22 @@ class QrLoginDialog(QDialog):
         lay.addWidget(self.lbl_state)
         lay.addSpacing(8)
 
-        self.btn_cancel = QPushButton('Отмена')
-        self.btn_cancel.setObjectName('flat')
-        self.btn_cancel.setMinimumHeight(34)
-        self.btn_cancel.clicked.connect(self.reject)
-        lay.addWidget(self.btn_cancel)
+        # Кнопка называется «Назад», а не «Отмена»: она возвращает к
+        # вводу номера, а не закрывает программу. Отмена на этом экране
+        # пугала — человек думал, что сейчас всё закроется.
+        self.btn_back = QPushButton('Назад')
+        self.btn_back.setObjectName('flat')
+        self.btn_back.setMinimumHeight(34)
+        self.btn_back.clicked.connect(self._go_back)
+        lay.addWidget(self.btn_back)
+
+        # Что выбрал человек при закрытии окна: 'back' — вернуться к
+        # номеру, иначе окно закрыто совсем.
+        self.result_kind = None
+
+    def _go_back(self):
+        self.result_kind = 'back'
+        self.reject()
 
     def set_url(self, url):
         """Рисует QR по ссылке tg://login?token=..."""
@@ -1770,6 +1781,14 @@ class MainWindow(QMainWindow):
         worker()
         dlg.exec()
 
+        # Окно закрыли кнопкой «Назад» — возвращаемся к вводу номера.
+        # Для этого останавливаем ожидание входа: иначе backend остался
+        # бы ждать сканирования кода, который уже никто не видит.
+        if getattr(dlg, 'result_kind', None) == 'back':
+            print("[Вход] возврат к вводу номера")
+            self.backend._stop_connect = False
+            self._login_by_phone_again()
+
         for sig, slot in ((self._qr_url, dlg.set_url),
                           (self._qr_state, dlg.set_state)):
             try:
@@ -1780,6 +1799,24 @@ class MainWindow(QMainWindow):
             self._qr_done.disconnect(on_done)
         except Exception:
             pass
+
+    def _login_by_phone_again(self):
+        """Возвращает к окну ввода номера после отказа от QR.
+
+        Окно спрашивает номер так же, как при обычном входе, и ответ
+        уходит в backend. Отдельного канала не нужно: это тот же шаг.
+        """
+        dlg = LoginDialog(
+            'phone',
+            "Введите номер телефона в международном формате, "
+            "например +79991234567", self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if getattr(dlg, 'qr_chosen', False):
+                self._login_by_qr()
+                return
+            self.backend.answer_login(dlg.value())
+        else:
+            self.backend.answer_login(None)
 
     def set_status(self, text):
         """Сообщение в строке состояния главного окна."""
