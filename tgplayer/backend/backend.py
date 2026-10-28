@@ -124,6 +124,9 @@ class TelegramBackend(QObject):
     # Вход отменён человеком. По этому сигналу программа закрывается:
     # без аккаунта ей нечего показывать, а пустое окно только мешает.
     login_cancelled = pyqtSignal()
+    # Человек в окне кода нажал «Войти по QR»: вход по номеру надо
+    # прервать и переключиться на код с экрана.
+    login_switch_qr = pyqtSignal()
     # Найденные по всему Telegram каналы (список объектов Telethon).
     search_results = pyqtSignal(list)
 
@@ -783,49 +786,6 @@ class TelegramBackend(QObject):
             return state
         except Exception:
             return state
-
-    async def login_again(self):
-        """Запускает вход в аккаунт заново, без перезапуска программы.
-
-        Нужно, когда человек случайно закрыл окно входа: раньше
-        единственным выходом было перезапустить плеер. Здесь заново
-        проходим те же шаги — номер, код, при необходимости пароль.
-
-        Если вход уже выполнен, ничего не делаем: повторно спрашивать
-        номер у вошедшего бессмысленно и пугает.
-        """
-        if self.client is None or self._is_closed():
-            self.status_changed.emit("Вход невозможен: нет связи с Telegram")
-            return False
-        try:
-            if await self.client.is_user_authorized():
-                self.status_changed.emit("Вы уже вошли в аккаунт")
-                return True
-        except Exception:
-            pass
-
-        # Флаг сброса, выставленный прошлой отменой, мешает начать заново.
-        self._stop_connect = False
-        self.status_changed.emit("Вход в Telegram...")
-        print("[Бэкенд] повторный вход по кнопке")
-        try:
-            status = await self._interactive_login()
-        except Exception as ex:
-            print(f"[Бэкенд] повторный вход не удался: {ex}")
-            self.error_occurred.emit(f"Вход не удался: {ex}")
-            return False
-
-        if status == 'ok':
-            print("[Бэкенд] Вход выполнен")
-            self.status_changed.emit("Подключено")
-            try:
-                await self.load_data()
-            except Exception as ex:
-                print(f"[Бэкенд] данные не загрузились: {ex}")
-            return True
-        if status == 'error':
-            self.error_occurred.emit("Вход не выполнен: проверьте связь")
-        return False
 
     async def reconnect(self, force=False):
         """Ищет рабочий способ подключения заново.

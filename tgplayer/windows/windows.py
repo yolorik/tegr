@@ -231,11 +231,15 @@ class LoginDialog(QDialog):
         lay.addWidget(self.btn_ok)
         lay.addSpacing(6)
 
-        # Переключение на вход по QR. Показываем только на шаге номера:
-        # на шагах кода и пароля выбора уже нет, там вход идёт по номеру.
+        # Переключение на вход по QR. На шаге номера — просто выбор
+        # способа. На шагах кода и пароля та же кнопка работает как
+        # «назад»: человек понял, что код не приходит (Telegram отправил
+        # его в приложение, а не по SMS), и хочет войти по коду с экрана.
+        # Отменять вход целиком для этого не нужно.
         self.btn_qr = None
-        if kind == 'phone' and not secret:
-            self.btn_qr = QPushButton('Войти по QR-коду')
+        if not secret:
+            self.btn_qr = QPushButton('Войти по QR-коду'
+                                      if kind == 'phone' else 'Войти по QR')
             self.btn_qr.setObjectName('flat')
             self.btn_qr.setMinimumHeight(34)
             self.btn_qr.clicked.connect(self._choose_qr)
@@ -1470,22 +1474,13 @@ class MainWindow(QMainWindow):
         self.channel_search.textChanged.connect(self._on_channel_query)
         top_bar.addWidget(self.channel_search, 1)
 
-        # Перечитать папки и каналы из Telegram без перезапуска программы.
-        self.btn_refresh = QPushButton("Обновить")
-        self.btn_refresh.setToolTip("Перечитать папки и каналы из Telegram")
-        self.btn_refresh.clicked.connect(self.refresh_data)
-        top_bar.addWidget(self.btn_refresh)
-
-        # Войти в аккаунт, не перезапуская программу.
+        # Кнопок «Обновить» и «Войти» здесь больше нет.
         #
-        # Нужна на случай, когда окно входа закрыли случайно: раньше
-        # после «Отмены» единственным выходом было закрыть и открыть
-        # плеер заново. Кнопка видна всегда — вреда нет, а если вход
-        # уже выполнен, она просто сообщит об этом.
-        self.btn_login = QPushButton("Войти")
-        self.btn_login.setToolTip("Войти в аккаунт Telegram")
-        self.btn_login.clicked.connect(self.login_again)
-        top_bar.addWidget(self.btn_login)
+        # «Обновить» дублировала то, что и так происходит само: список
+        # перечитывается при открытии канала, а устаревшие данные видны
+        # по пустому списку. «Войти» появилась на время, когда вход
+        # показывался поверх плеера и его можно было случайно закрыть.
+        # Теперь вход идёт ДО окна и есть вход по QR — кнопка не нужна.
 
         # Меню окна: настройки и уход за кэшем.
         self.btn_menu = QPushButton("⚙")
@@ -1723,8 +1718,17 @@ class MainWindow(QMainWindow):
                 self._login_by_qr()
                 return
             self.backend.answer_login(dlg.value())
-        else:
+            return
+
+        # Окно закрыли. На шаге номера это отказ от входа — программа
+        # закроется. На шаге кода человек мог просто передумать и решить
+        # войти по QR: тогда назад, к выбору, а не выход.
+        if kind in ('code', 'password'):
             self.backend.answer_login(None)
+            self.backend._stop_connect = False
+            self._login_by_qr()
+            return
+        self.backend.answer_login(None)
 
     def _login_by_qr(self):
         """Вход по QR: показываем код и ждём подтверждения с телефона."""
@@ -2812,14 +2816,13 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def refresh_data(self):
-        """Перечитывает папки и каналы из Telegram по кнопке «Обновить»."""
+        """Перечитывает папки и каналы из Telegram.
+
+        Вызывается там, где список надо обновить не по кнопке: после
+        входа, после смены канала, по горячей клавише.
+        """
         self.set_status("Обновление папок...")
         self.backend.submit_coroutine(self.backend.refresh_catalogs())
-
-    def login_again(self):
-        """Запускает вход заново, если окно входа закрыли случайно."""
-        self.set_status("Вход в Telegram...")
-        self.backend.submit_coroutine(self.backend.login_again())
 
     def show_error(self, message):
         QMessageBox.critical(self, "Ошибка", message)
