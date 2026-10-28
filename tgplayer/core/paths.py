@@ -116,3 +116,36 @@ def load_app_icon():
             if not icon.isNull():
                 return icon
     return None
+
+
+def login_logo_path():
+    """Путь к картинке самолётика для окна входа, либо None.
+
+    Самолётик целиком, белый с серыми плоскостями — для окна входа.
+    В трее используется другая картинка: там средняя часть вырезана,
+    чтобы её цвет брался из темы (см. tray_icon_path).
+
+    Ищем там же, где иконку: во внутреннем каталоге сборки, рядом с .exe
+    и в каталоге программы.
+    """
+    return _find_asset('tgplayer_plane.png')
+
+
+def tray_icon_path():
+    """Путь к картинке для трея: самолётик с вырезанной серединой.
+
+    Середина прозрачна, поэтому при отрисовке под неё подкладывается цвет
+    темы — значок меняется вместе с оформлением плеера.
+    """
+    return _find_asset('tgplayer_plane_key.png')
+
+
+def _find_asset(name):
+    """Ищет файл-ресурс в тех же местах, что и иконку программы."""
+    for base in (bundle_dir(), app_dir(), program_dir()):
+        if not base:
+            continue
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            return path
+    return None

@@ -66,14 +66,15 @@ class LoginDialog(QDialog):
 
         # Круглая «аватарка» вместо значка: так окно сразу читается как
         # телеграмное, а не как системный запрос пароля.
+        #
+        # Значок рисуем СВОИМ кодом, а не берём иконку программы: у
+        # иконки свой фон (квадратная синяя плитка), и поверх круглой
+        # подложки он выглядел как вложенный квадрат другого оттенка.
+        # Здесь — ровный круг акцентного цвета и белый самолётик поверх.
         logo = QLabel()
         logo.setFixedSize(76, 76)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon = paths.load_app_icon()
-        if icon is not None and not icon.isNull():
-            logo.setPixmap(icon.pixmap(52, 52))
-        logo.setStyleSheet(
-            f"background: {theme.theme()['accent']}; border-radius: 38px;")
+        logo.setPixmap(self._logo_pixmap(76))
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(logo)
@@ -99,8 +100,10 @@ class LoginDialog(QDialog):
         if secret:
             self.edit.setEchoMode(QLineEdit.EchoMode.Password)
         if kind == 'phone':
-            self.edit.setPlaceholderText('+7 999 123-45-67')
-            self.edit.setText('+')
+            # Плюс НЕ подставляем заранее: номер можно набрать и без него
+            # («79991234567»), и добавленный плюс мешал — человек видел
+            # лишний символ, стирал его и получал «+79991…».
+            self.edit.setPlaceholderText('79991234567 или +79991234567')
         lay.addWidget(self.edit)
         lay.addSpacing(8)
 
@@ -133,6 +136,49 @@ class LoginDialog(QDialog):
 
         self.edit.returnPressed.connect(self._accept)
         self.edit.setFocus()
+
+    @staticmethod
+    def _logo_pixmap(size):
+        """Самолётик для окна входа: круг акцента и белый самолётик.
+
+        Здесь НЕ тот значок, что в трее: в трее средняя часть красится в
+        акцент и подложки нет, а в окне входа нужен полный знак — круг
+        цвета темы и самолётик целиком поверх него.
+
+        Если файла нет, рисуем только круг: пусть окно останется опрятным.
+        """
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            try:
+                accent = QColor(theme.theme()['accent'])
+            except Exception:
+                accent = QColor('#2f7fd6')
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(accent)
+            p.drawEllipse(QRectF(0, 0, size, size))
+
+            path = paths.login_logo_path()
+            if path:
+                plane = QPixmap(path)
+                if not plane.isNull():
+                    # Самолётик не должен выходить за круг: считаем вписанный
+                    # квадрат (сторона = size/√2 ≈ 0.707·size) и берём от
+                    # него 85% — так остаётся видимый край круга по бокам.
+                    # Раньше брали 72% от всего размера, и знак упирался в
+                    # границу, обрезаясь справа.
+                    inner = int(size * 0.707 * 0.85)
+                    scaled = plane.scaled(
+                        inner, inner,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+                    p.drawPixmap((size - scaled.width()) // 2,
+                                 (size - scaled.height()) // 2, scaled)
+        finally:
+            p.end()
+        return pix
 
     def _accept(self):
         if not self.edit.text().strip():
@@ -1271,6 +1317,17 @@ class MainWindow(QMainWindow):
         self.btn_refresh.clicked.connect(self.refresh_data)
         top_bar.addWidget(self.btn_refresh)
 
+        # Войти в аккаунт, не перезапуская программу.
+        #
+        # Нужна на случай, когда окно входа закрыли случайно: раньше
+        # после «Отмены» единственным выходом было закрыть и открыть
+        # плеер заново. Кнопка видна всегда — вреда нет, а если вход
+        # уже выполнен, она просто сообщит об этом.
+        self.btn_login = QPushButton("Войти")
+        self.btn_login.setToolTip("Войти в аккаунт Telegram")
+        self.btn_login.clicked.connect(self.login_again)
+        top_bar.addWidget(self.btn_login)
+
         # Меню окна: настройки и уход за кэшем.
         self.btn_menu = QPushButton("⚙")
         self.btn_menu.setToolTip("Настройки")
@@ -1411,21 +1468,80 @@ class MainWindow(QMainWindow):
             pass
         self._update_tray_icon()
 
-    def _update_tray_icon(self):
-        """Значок в трее — иконка программы, как была раньше.
+    def _tray_icon(self):
+        """Значок трея: самолётик, средняя часть — в цвете акцента темы.
 
-        Состояние связи в трее больше не показываем: его видно по значку
-        в углу окна, а в трее нужен узнаваемый знак программы — тот же,
-        что на ярлыке и у установщика.
+        В картинке средняя часть залита ключевым цветом #FF00FF. Здесь мы
+        заменяем его на акцент текущей темы — поэтому значок сам меняется
+        вместе с оформлением, и не нужен набор картинок под каждую тему.
+
+        Почему ключевой цвет, а не прозрачный вырез: вырез пришлось бы
+        заполнять через маски и наложения, и на этом уже дважды ломались
+        — знак превращался в контур. Замена цвета проста и предсказуема.
+
+        Заменяем с запасом по близости: не «ровно #FF00FF», а всё, что
+        похоже на маджента. Так захватываются и сглаженные края заливки.
+        Белые и синеватые плоскости далеко от этого цвета, их не трогаем.
+        """
+        path = paths.tray_icon_path()
+        if not path:
+            return None
+        source = QImage(path)
+        if source.isNull():
+            return None
+
+        try:
+            accent = QColor(theme.theme()['accent'])
+        except Exception:
+            accent = QColor('#5288c1')
+
+        icon = QIcon()
+        for size in (16, 20, 24, 32, 48, 64):
+            img = source.scaled(
+                size, size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation).convertToFormat(
+                    QImage.Format.Format_ARGB32)
+            img = self._replace_key_color(img, accent)
+            icon.addPixmap(QPixmap.fromImage(img))
+        return icon
+
+    @staticmethod
+    def _replace_key_color(img, accent):
+        """Меняет ключевой цвет #FF00FF на акцент прямо в пикселях.
+
+        Маджента — красный и синий в максимуме, зелёного нет. Именно по
+        этому признаку и отличаем её от белого (все три в максимуме) и от
+        синеватых плоскостей (красного мало).
+        """
+        w, h = img.width(), img.height()
+        ar, ag, ab = accent.red(), accent.green(), accent.blue()
+        for y in range(h):
+            for x in range(w):
+                c = img.pixelColor(x, y)
+                if c.alpha() < 40:
+                    continue
+                r, g, b = c.red(), c.green(), c.blue()
+                # Маджента: красный и синий высокие, зелёный — нет.
+                if r > 150 and b > 150 and g < 120:
+                    img.setPixelColor(x, y, QColor(ar, ag, ab, c.alpha()))
+        return img
+
+    def _update_tray_icon(self):
+        """Перекрашивает значок трея под текущую тему.
+
+        Акцентный цвет меняется вместе с темой, а значок собран из него —
+        значит, после смены оформления его надо собрать заново. Раньше
+        здесь стояла иконка программы, и от темы она не зависела.
         """
         if self.tray is None:
             return
         try:
-            icon = paths.load_app_icon()
-            if icon is not None:
+            icon = self._tray_icon()
+            if icon is not None and not icon.isNull():
                 self.tray.setIcon(icon)
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[Трей] значок не обновился: {ex}")
 
     def _on_login_step(self, kind, message):
         """Показывает шаг входа и возвращает ответ в поток backend'а.
@@ -1474,19 +1590,17 @@ class MainWindow(QMainWindow):
         print(f"[Трей] доступен: {available}")
         if not available:
             return
-        # Значок в трее — иконка программы, как была раньше: она узнаваема
-        # и совпадает с ярлыком. Состояние связи видно по значку в углу
-        # окна, дублировать его в трее незачем.
-        icon = paths.load_app_icon()
-        # Пустой QIcon в трее выглядит как отсутствие значка: Windows
-        # показывает пустое место, и понять, что программа запущена,
-        # можно только по окну. Поэтому проверяем не «None ли», а «есть
-        # ли настоящая картинка».
-        if icon is None or icon.isNull() or not icon.availableSizes():
-            print(f"[Трей] иконка не найдена или пуста — использую запасную")
+        # Значок в трее — самолётик, у которого средняя часть прозрачна:
+        # под неё подкладывается цвет акцента из текущей темы. Так значок
+        # перекрашивается вместе с оформлением, а не остаётся всегда одним
+        # и тем же.
+        icon = self._tray_icon()
+        if icon is None or icon.isNull():
+            print("[Трей] самолётик не найден — использую запасной значок")
             icon = self._fallback_tray_icon()
         else:
-            print(f"[Трей] иконка: {[ (s.width(), s.height()) for s in icon.availableSizes() ]}")
+            print(f"[Трей] значок готов, размеры: "
+                  f"{[(s.width(), s.height()) for s in icon.availableSizes()]}")
         tray = QSystemTrayIcon(icon, self)
         tray.setToolTip(f'{version.APP_NAME} {version.VERSION}')
 
@@ -1627,6 +1741,9 @@ class MainWindow(QMainWindow):
             self.conn_button.refit()
         except Exception:
             pass
+        # Значок трея собран из акцентного цвета — после смены темы его
+        # надо пересобрать, иначе он останется в цветах прошлой темы.
+        self._update_tray_icon()
 
     # --- Обновления -----------------------------------------------------
 
@@ -2444,10 +2561,48 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def start_login(self):
+        """Готовит окно к тому, что первым будет вход, а не плеер.
+
+        Порядок: сначала окно входа, потом главное окно. Раньше было
+        наоборот — плеер открывался сразу, окно входа всплывало поверх,
+        и при случайном закрытии оставался пустой плеер без каналов.
+
+        Сам цикл подключения запускает WorkerThread (см. start_loop), и он
+        же спрашивает данные через login_step. Здесь только ждём сигнал
+        об успехе и показываем окно.
+        """
+        print("[Вход] сначала вход в аккаунт, окно плеера — после")
+        try:
+            self.backend.connection_changed.connect(self._on_login_connection)
+        except Exception as ex:
+            print(f"[Вход] сигнал не подключён: {ex}")
+
+    def _on_login_connection(self, state):
+        """Показывает главное окно, когда вход выполнен.
+
+        connection_changed приходит с 'ok' только когда аккаунт
+        авторизован — то есть после успешного входа.
+        """
+        if state != 'ok':
+            return
+        if getattr(self, '_shown_after_login', False):
+            return
+        self._shown_after_login = True
+        print("[Вход] вход выполнен — показываю главное окно")
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def refresh_data(self):
         """Перечитывает папки и каналы из Telegram по кнопке «Обновить»."""
         self.set_status("Обновление папок...")
         self.backend.submit_coroutine(self.backend.refresh_catalogs())
+
+    def login_again(self):
+        """Запускает вход заново, если окно входа закрыли случайно."""
+        self.set_status("Вход в Telegram...")
+        self.backend.submit_coroutine(self.backend.login_again())
 
     def show_error(self, message):
         QMessageBox.critical(self, "Ошибка", message)

@@ -121,6 +121,9 @@ class TelegramBackend(QObject):
     # Шаг входа в аккаунт: (вид шага, подсказка). Виды: 'phone', 'code',
     # 'password', 'error'. Ответ возвращается через answer_login().
     login_step = pyqtSignal(str, str)
+    # Вход отменён человеком. По этому сигналу программа закрывается:
+    # без аккаунта ей нечего показывать, а пустое окно только мешает.
+    login_cancelled = pyqtSignal()
     # Найденные по всему Telegram каналы (список объектов Telethon).
     search_results = pyqtSignal(list)
 
@@ -701,6 +704,49 @@ class TelegramBackend(QObject):
         except Exception:
             return state
 
+    async def login_again(self):
+        """Запускает вход в аккаунт заново, без перезапуска программы.
+
+        Нужно, когда человек случайно закрыл окно входа: раньше
+        единственным выходом было перезапустить плеер. Здесь заново
+        проходим те же шаги — номер, код, при необходимости пароль.
+
+        Если вход уже выполнен, ничего не делаем: повторно спрашивать
+        номер у вошедшего бессмысленно и пугает.
+        """
+        if self.client is None or self._is_closed():
+            self.status_changed.emit("Вход невозможен: нет связи с Telegram")
+            return False
+        try:
+            if await self.client.is_user_authorized():
+                self.status_changed.emit("Вы уже вошли в аккаунт")
+                return True
+        except Exception:
+            pass
+
+        # Флаг сброса, выставленный прошлой отменой, мешает начать заново.
+        self._stop_connect = False
+        self.status_changed.emit("Вход в Telegram...")
+        print("[Бэкенд] повторный вход по кнопке")
+        try:
+            status = await self._interactive_login()
+        except Exception as ex:
+            print(f"[Бэкенд] повторный вход не удался: {ex}")
+            self.error_occurred.emit(f"Вход не удался: {ex}")
+            return False
+
+        if status == 'ok':
+            print("[Бэкенд] Вход выполнен")
+            self.status_changed.emit("Подключено")
+            try:
+                await self.load_data()
+            except Exception as ex:
+                print(f"[Бэкенд] данные не загрузились: {ex}")
+            return True
+        if status == 'error':
+            self.error_occurred.emit("Вход не выполнен: проверьте связь")
+        return False
+
     async def reconnect(self, force=False):
         """Ищет рабочий способ подключения заново.
 
@@ -1172,8 +1218,11 @@ class TelegramBackend(QObject):
                     # и повторять попытки бессмысленно, иначе плеер будет
                     # бесконечно спрашивать одно и то же.
                     self._stop_connect = True
-                    if notify:
-                        self.error_occurred.emit("Вход в аккаунт отменён.")
+                    # Сигнал шлём ВСЕГДА, а не только при первой попытке:
+                    # по нему программа понимает, что вход отменили, и
+                    # закрывается. Без аккаунта работать нечем, а держать
+                    # пустое окно — хуже, чем выйти.
+                    self.login_cancelled.emit()
                     return False
                 except Exception as ex:
                     # Смена режима прокси — не «ошибка способа», а
