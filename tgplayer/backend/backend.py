@@ -361,6 +361,86 @@ class TelegramBackend(QObject):
         except RuntimeError:
             pass
 
+    async def qr_login_flow(self, on_url, on_state):
+        """Вход по QR-коду: телефон сканирует код с экрана.
+
+        Нужен потому, что Telegram не всегда присылает код по SMS: если у
+        номера уже есть активная сессия, он отправляет код В ПРИЛОЖЕНИЕ —
+        в служебный чат «Telegram». Человек ждёт SMS, ничего не приходит,
+        и войти невозможно. QR снимает вопрос вовсе: код не нужен.
+
+        on_url(str) — отдать ссылку tg://login?token=... (нарисовать QR);
+        on_state(str) — сообщить состояние: 'scan' (ждём сканирования),
+        'confirm' (отсканировали, подтвердите на телефоне), 'expired'
+        (код устарел, обновляем).
+
+        Возвращает 'ok', 'cancel' или 'error' — как _interactive_login.
+        """
+        client = self.client
+        if client is None:
+            return 'error'
+
+        if await client.is_user_authorized():
+            return 'ok'
+
+        # Сбрасываем флаг «человек отказался». Окно входа закрывается
+        # кнопкой «Войти по QR» как обычное «принято», но backend до этого
+        # мог уже пометить вход отменённым — и тогда цикл ниже не сделал
+        # бы ни одного шага, а программа закрылась бы.
+        self._stop_connect = False
+
+        try:
+            qr = await client.qr_login()
+        except Exception as ex:
+            print(f"[Вход] QR не получен: {ex}")
+            return 'error'
+
+        on_url(qr.url)
+        on_state('scan')
+
+        # Ждём подтверждения. Каждый wait — это один цикл ожидания;
+        # когда код устаревает, Telethon бросает TimeoutError, и код
+        # нужно перерисовать (recreate). Так повторяем, пока человек
+        # не отменит вход.
+        while not self._stop_connect and not self._is_closed():
+            try:
+                await qr.wait(timeout=30)
+                print("[Вход] QR подтверждён")
+                return 'ok'
+            except asyncio.TimeoutError:
+                # Код устарел — рисуем новый. Это нормальный ход событий:
+                # QR живёт около минуты.
+                if self._stop_connect or self._is_closed():
+                    break
+                try:
+                    await qr.recreate()
+                    on_url(qr.url)
+                    on_state('expired')
+                    print("[Вход] QR обновлён")
+                except Exception as ex:
+                    print(f"[Вход] QR не обновлён: {ex}")
+                    return 'error'
+            except telethon_boot.SessionPasswordNeededError:
+                # Включена двухфакторная защита: после сканирования нужен
+                # облачный пароль.
+                password = await self._ask_login(
+                    'password', "Включена двухфакторная защита. Введите пароль")
+                if not password:
+                    return 'cancel'
+                try:
+                    await client.sign_in(password=password)
+                    return 'ok'
+                except Exception as ex:
+                    print(f"[Вход] пароль не принят: {ex}")
+                    return 'error'
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:
+                print(f"[Вход] QR: {type(ex).__name__}: {ex}")
+                return 'error'
+
+        return 'cancel'
+
     async def _interactive_login(self):
         """Вход в аккаунт: номер, код, при необходимости пароль 2FA.
 

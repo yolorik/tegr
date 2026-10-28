@@ -38,6 +38,101 @@ from ..icons import icons
 from ..player.player import PlayerWindow
 from ..backend.backend import TelegramBackend
 
+class QrLoginDialog(QDialog):
+    """Вход по QR-коду: телефон сканирует картинку с экрана.
+
+    Зачем нужен. Telegram не всегда шлёт код по SMS: если у номера уже
+    есть активная сессия, код уходит В ПРИЛОЖЕНИЕ — в служебный чат
+    «Telegram». Человек ждёт SMS, ничего не приходит, и войти нельзя.
+    QR снимает этот вопрос: код не нужен вовсе.
+
+    Порядок действий, который показываем словами: открыть Telegram на
+    телефоне → Настройки → Устройства → Подключить устройство → навести
+    камеру на код.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Вход по QR-коду')
+        self.setModal(True)
+        self.setFixedWidth(420)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 18)
+        lay.setSpacing(10)
+
+        head = QLabel('Вход по QR-коду')
+        head.setObjectName('heading')
+        head.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(head)
+
+        sub = QLabel('Откройте Telegram на телефоне: Настройки → Устройства → '
+                     'Подключить устройство — и наведите камеру на код.')
+        sub.setObjectName('hint')
+        sub.setWordWrap(True)
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(sub)
+        lay.addSpacing(6)
+
+        # Картинка QR. Белая подложка обязательна: на тёмной теме чёрные
+        # модули кода на прозрачном фоне телефон может не распознать.
+        self.lbl_qr = QLabel()
+        self.lbl_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_qr.setFixedSize(260, 260)
+        self.lbl_qr.setStyleSheet('background: white; border-radius: 8px;')
+        wrap = QHBoxLayout()
+        wrap.addStretch(1)
+        wrap.addWidget(self.lbl_qr)
+        wrap.addStretch(1)
+        lay.addLayout(wrap)
+        lay.addSpacing(6)
+
+        self.lbl_state = QLabel('Получаю код...')
+        self.lbl_state.setObjectName('hint')
+        self.lbl_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.lbl_state)
+        lay.addSpacing(8)
+
+        self.btn_cancel = QPushButton('Отмена')
+        self.btn_cancel.setObjectName('flat')
+        self.btn_cancel.setMinimumHeight(34)
+        self.btn_cancel.clicked.connect(self.reject)
+        lay.addWidget(self.btn_cancel)
+
+    def set_url(self, url):
+        """Рисует QR по ссылке tg://login?token=..."""
+        try:
+            import segno
+        except Exception as ex:
+            print(f"[Вход] нет библиотеки для QR: {ex}")
+            self.lbl_state.setText('Не удалось нарисовать код')
+            return
+
+        path = os.path.join(tempfile.gettempdir(), 'tgplayer_qr.png')
+        try:
+            qr = segno.make(url, error='m')
+            qr.save(path, scale=8, border=2,
+                    dark='black', light='white')
+            pix = QPixmap(path)
+            if not pix.isNull():
+                self.lbl_qr.setPixmap(pix.scaled(
+                    244, 244,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+        except Exception as ex:
+            print(f"[Вход] QR не нарисовался: {ex}")
+            self.lbl_state.setText('Не удалось нарисовать код')
+
+    def set_state(self, state):
+        """Подсказка под кодом: что происходит сейчас."""
+        text = {
+            'scan': 'Сканируйте код телефоном',
+            'expired': 'Код обновлён — сканируйте заново',
+            'confirm': 'Код отсканирован. Подтвердите вход на телефоне',
+        }.get(state, state)
+        self.lbl_state.setText(text)
+
+
 class LoginDialog(QDialog):
     """Один шаг входа в Telegram: телефон, код подтверждения или пароль.
 
@@ -54,6 +149,7 @@ class LoginDialog(QDialog):
 
     def __init__(self, kind, message, parent=None):
         super().__init__(parent)
+        self.qr_chosen = False
         title, label, secret = self.STEPS.get(
             kind, ('Вход в Telegram', 'Введите значение', False))
         self.setWindowTitle('Вход в Telegram')
@@ -134,6 +230,17 @@ class LoginDialog(QDialog):
         self.btn_ok.clicked.connect(self._accept)
         lay.addWidget(self.btn_ok)
         lay.addSpacing(6)
+
+        # Переключение на вход по QR. Показываем только на шаге номера:
+        # на шагах кода и пароля выбора уже нет, там вход идёт по номеру.
+        self.btn_qr = None
+        if kind == 'phone' and not secret:
+            self.btn_qr = QPushButton('Войти по QR-коду')
+            self.btn_qr.setObjectName('flat')
+            self.btn_qr.setMinimumHeight(34)
+            self.btn_qr.clicked.connect(self._choose_qr)
+            lay.addWidget(self.btn_qr)
+            lay.addSpacing(4)
 
         self.btn_cancel = QPushButton('Отмена')
         self.btn_cancel.setObjectName('flat')
@@ -217,6 +324,16 @@ class LoginDialog(QDialog):
         return pix.scaled(size, size,
                           Qt.AspectRatioMode.IgnoreAspectRatio,
                           Qt.TransformationMode.SmoothTransformation)
+
+    def _choose_qr(self):
+        """Человек выбрал вход по QR вместо номера.
+
+        Ставим флаг и закрываем окно как «принято». Backend по флагу
+        понимает, что нужен вход по коду с экрана, и запускает его. Так
+        не нужен отдельный диалог — выбор происходит в том же окне.
+        """
+        self.qr_chosen = True
+        self.accept()
 
     def _accept(self):
         if not self.edit.text().strip():
@@ -1250,6 +1367,10 @@ class MainWindow(QMainWindow):
     # Ход загрузки обновления и её завершение — тоже сигналами.
     _download_progress = pyqtSignal(int, int)
     _download_done = pyqtSignal(bool, str, str)
+    # Вход по QR: ссылка для кода, состояние подсказки и итог.
+    _qr_url = pyqtSignal(str)
+    _qr_state = pyqtSignal(str)
+    _qr_done = pyqtSignal(str)
 
     def __init__(self, backend):
         super().__init__()
@@ -1594,9 +1715,67 @@ class MainWindow(QMainWindow):
             return
         dlg = LoginDialog(kind, message, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Выбран вход по QR. Отмену НЕ отправляем: по ней backend
+            # выставил бы флаг «человек отказался» и закрыл программу —
+            # именно это и происходило, окно просто исчезало.
+            # Вместо этого сразу показываем код с экрана.
+            if getattr(dlg, 'qr_chosen', False):
+                self._login_by_qr()
+                return
             self.backend.answer_login(dlg.value())
         else:
             self.backend.answer_login(None)
+
+    def _login_by_qr(self):
+        """Вход по QR: показываем код и ждём подтверждения с телефона."""
+        print("[Вход] выбран вход по QR")
+        dlg = QrLoginDialog(self)
+
+        def on_url(url):
+            # Из потока backend в Qt — только сигналом.
+            self._qr_url.emit(url)
+
+        def on_state(state):
+            self._qr_state.emit(state)
+
+        self._qr_url.connect(dlg.set_url)
+        self._qr_state.connect(dlg.set_state)
+
+        def worker():
+            import asyncio
+
+            async def run():
+                try:
+                    status = await self.backend.qr_login_flow(on_url, on_state)
+                except Exception as ex:
+                    print(f"[Вход] QR не удался: {ex}")
+                    status = 'error'
+                print(f"[Вход] QR завершён: {status}")
+                self._qr_done.emit(status)
+
+            asyncio.run_coroutine_threadsafe(run(), self.backend.loop)
+
+        def on_done(status):
+            dlg.accept()
+            if status == 'ok':
+                self.set_status('Вход выполнен')
+                # Данные загрузим заново: только что вошли в аккаунт.
+                self.backend.submit_coroutine(self.backend.refresh_catalogs())
+
+        self._qr_done.connect(on_done)
+        worker()
+        dlg.exec()
+
+        for sig, slot in ((self._qr_url, dlg.set_url),
+                          (self._qr_state, dlg.set_state)):
+            try:
+                sig.disconnect(slot)
+            except Exception:
+                pass
+        try:
+            self._qr_done.disconnect(on_done)
+        except Exception:
+            pass
 
     def set_status(self, text):
         """Сообщение в строке состояния главного окна."""
