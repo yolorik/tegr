@@ -606,8 +606,16 @@ class PlayerWindow(QMainWindow):
         panel.setFixedWidth(width)
         self._playlist_width = width
         # Тянуть за левый край: панель стоит справа от видео.
+        #
+        # Фильтр ставим и на дочерние виджеты. Раньше он был только у
+        # самой панели, а почти всю её площадь занимает список роликов —
+        # события мыши уходили в него, и край не «ловился»: ширина не
+        # менялась совсем, а курсор-стрелки залипали на всём окне.
         panel.installEventFilter(self)
         panel.setMouseTracking(True)
+        for child in (self.list_playlist, self.lbl_playlist):
+            child.installEventFilter(self)
+            child.setMouseTracking(True)
         panel.hide()
         return panel
 
@@ -630,10 +638,6 @@ class PlayerWindow(QMainWindow):
             self.backend.set_setting('playlist_width', width)
         except Exception as ex:
             print(f"[Плеер] ширина списка не сохранилась: {ex}")
-
-    def _playlist_resize_edge(self, pos):
-        """Находится ли точка у левого края панели (там тянем ширину)."""
-        return pos.x() <= config.PLAYLIST_RESIZE_MARGIN
 
     def _doc_id(self, index):
         """id документа ролика по индексу плейлиста (None, если его нет)."""
@@ -2050,24 +2054,40 @@ class PlayerWindow(QMainWindow):
     def _playlist_resize_event(self, event):
         """Перетаскивание левого края панели списка: меняет её ширину.
 
+        Событие приходит и от самой панели, и от списка внутри неё —
+        поэтому координату приводим к системе панели, а не берём как
+        есть: у дочернего виджета она своя.
+
+        Курсор меняем только у панели, а не у всего окна: раньше стоял
+        self.setCursor, и «две стрелки» оставались на всём плеере, в том
+        числе над видео.
+
         Возвращает True, если событие поглощено: тогда клик по краю не
         считается кликом по ролику.
         """
         t = event.type()
         panel = self.playlist_panel
 
+        def near_edge(pos):
+            """Точка у левого края панели (в её координатах)."""
+            try:
+                in_panel = panel.mapFromGlobal(pos)
+            except Exception:
+                return False
+            return 0 <= in_panel.x() <= config.PLAYLIST_RESIZE_MARGIN
+
         if t == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
-                if self._playlist_resize_edge(event.position().toPoint()):
+                if near_edge(event.globalPosition().toPoint()):
                     self._resizing_playlist = True
                     self._resize_start_x = int(event.globalPosition().x())
                     self._resize_start_w = panel.width()
-                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                    panel.setCursor(Qt.CursorShape.SizeHorCursor)
                     return True
 
         elif t == QEvent.Type.MouseMove:
             if getattr(self, '_resizing_playlist', False):
-                # Панель справа: тянем влево — она шире.
+                # Панель справа от видео: тянем влево — она шире.
                 dx = self._resize_start_x - int(event.globalPosition().x())
                 width = self._resize_start_w + dx
                 width = max(config.PLAYLIST_MIN_WIDTH,
@@ -2075,16 +2095,22 @@ class PlayerWindow(QMainWindow):
                 panel.setFixedWidth(width)
                 return True
             # Курсор над краем — показываем, что тут можно тянуть.
-            over = self._playlist_resize_edge(event.position().toPoint())
-            self.setCursor(Qt.CursorShape.SizeHorCursor if over
-                           else Qt.CursorShape.ArrowCursor)
+            over = near_edge(event.globalPosition().toPoint())
+            panel.setCursor(Qt.CursorShape.SizeHorCursor if over
+                            else Qt.CursorShape.ArrowCursor)
 
         elif t == QEvent.Type.MouseButtonRelease:
             if getattr(self, '_resizing_playlist', False):
                 self._resizing_playlist = False
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+                panel.setCursor(Qt.CursorShape.ArrowCursor)
                 self._save_playlist_width()
                 return True
+
+        elif t == QEvent.Type.Leave:
+            # Ушли с панели — возвращаем обычный курсор, иначе стрелки
+            # оставались висеть до перезапуска.
+            if not getattr(self, '_resizing_playlist', False):
+                panel.setCursor(Qt.CursorShape.ArrowCursor)
 
         return False
 
@@ -2101,27 +2127,34 @@ class PlayerWindow(QMainWindow):
         # Панель отдельное окно, сама она за PiP не едет: без этого
         # значки оставались на прежнем месте и висели поверх чужих окон,
         # пока мышь не уходила с окна и не возвращалась.
-        if obj is self.pip_window and t in (QEvent.Type.Resize,
-                                            QEvent.Type.Show,
-                                            QEvent.Type.Move):
+        #
+        # Обращаемся через getattr: фильтр живёт с самого создания окна,
+        # а pip_window появляется позже. Без этого на каждый кадр сыпалось
+        # «нет атрибута pip_window» — сотни строк ошибок в журнале.
+        pip = getattr(self, 'pip_window', None)
+        if pip is not None and obj is pip and t in (QEvent.Type.Resize,
+                                                    QEvent.Type.Show,
+                                                    QEvent.Type.Move):
             self.pip_bar.follow_window()
 
         # Справка по клавишам: клик по ней или закрытие убирают её.
-        if obj is self._help_window and t in (
+        help_win = getattr(self, '_help_window', None)
+        if help_win is not None and obj is help_win and t in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.Close):
             self._close_help()
             return True
 
         # Закрытие окна PiP (например, Alt+F4) не должно оставлять
         # приложение с одним скрытым главным окном — выходим из режима.
-        if obj is self.pip_window and t == QEvent.Type.Close:
+        if pip is not None and obj is pip and t == QEvent.Type.Close:
             self._exit_pip()
             return True
 
         # Alt+F4 по окну фуллскрина: закрывать его нельзя — контейнер с
         # видео остался бы в скрытом окне, а панель управления повисла бы
         # поверх экрана. Выходим из режима, само окно не закрываем.
-        if obj is self.fs_window and t == QEvent.Type.Close:
+        fs_win = getattr(self, 'fs_window', None)
+        if fs_win is not None and obj is fs_win and t == QEvent.Type.Close:
             self._exit_fullscreen()
             event.ignore()
             return True
@@ -2133,8 +2166,8 @@ class PlayerWindow(QMainWindow):
         # скрытие. Сразу после входа в PiP окно сообщает Leave (мышь-то
         # ещё не над ним), и без этой проверки панель исчезала в тот же
         # миг, как появилась: значков не было видно вовсе.
-        if (obj is self.pip_window and t == QEvent.Type.Leave
-                and self.pip_window.isVisible()
+        if (pip is not None and obj is pip and t == QEvent.Type.Leave
+                and pip.isVisible()
                 and self._pip_bar_shown_ts
                 and time.monotonic() - self._pip_bar_shown_ts > 0.5):
             self._pip_bar_timer.stop()
