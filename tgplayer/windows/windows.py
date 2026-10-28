@@ -376,169 +376,146 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
-class DownloadDialog(QDialog):
-    """Окно загрузки обновления: шкала, проценты и скорость.
+class UpdateBanner(QWidget):
+    """Полоса обновления внутри главного окна.
 
-    Раньше это был QMessageBox с одной строкой — окно маленькое, текст
-    прижат влево, и непонятно, идёт загрузка или всё встало. Здесь всё
-    по центру, видно шкалу и сколько осталось, а закрывать окно крестиком
-    нельзя: иначе непонятно, что произошло с загрузкой.
+    Раньше обновление показывалось отдельными окнами: предложение, потом
+    окно загрузки, потом вопрос про перезапуск. Три окна подряд поверх
+    программы — навязчиво, и человек терял нить: что происходит и что от
+    него хотят.
+
+    Здесь всё в одной полосе над списками: она появляется только когда
+    есть новость, показывает состояние и две кнопки. Когда обновление
+    скачано — меняет текст и предлагает перезапуск. Никаких отдельных
+    окон не появляется.
     """
 
-    cancelled = pyqtSignal()
+    # Нажали «Обновить».
+    accepted = pyqtSignal()
+    # Нажали «Позже» или закрыли полосу.
+    dismissed = pyqtSignal(bool)      # True — больше не предлагать эту версию
+    # Нажали «Перезапустить и обновить».
+    restart = pyqtSignal()
 
-    def __init__(self, parent, title):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Загрузка обновления')
-        self.setFixedWidth(420)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-        self._cancelled = False
-        self._total = 0
+        self.setObjectName('updatebanner')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            'QWidget#updatebanner { background: rgba(82, 136, 193, 0.18);'
+            ' border-radius: 8px; }')
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 18)
-        root.setSpacing(14)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 8, 8)
+        row.setSpacing(10)
 
-        self.lbl_title = QLabel(title)
-        self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_title.setObjectName('about_title')
-        root.addWidget(self.lbl_title)
+        self.lbl_text = QLabel('')
+        self.lbl_text.setWordWrap(True)
+        row.addWidget(self.lbl_text, 1)
 
+        # Шкала загрузки: видна только пока качается.
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setTextVisible(False)
+        self.bar.setFixedWidth(160)
         self.bar.setFixedHeight(8)
-        root.addWidget(self.bar)
+        self.bar.hide()
+        row.addWidget(self.bar)
 
-        self.lbl_info = QLabel('Подготовка…')
-        self.lbl_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_info.setObjectName('hint')
-        root.addWidget(self.lbl_info)
+        self.btn_action = QPushButton('Обновить')
+        self.btn_action.setObjectName('primary')
+        self.btn_action.setMinimumHeight(30)
+        self.btn_action.clicked.connect(self._on_action)
+        row.addWidget(self.btn_action)
 
-        row = QHBoxLayout()
-        row.addStretch(1)
-        self.btn_cancel = QPushButton('Отмена')
-        self.btn_cancel.clicked.connect(self._on_cancel)
-        row.addWidget(self.btn_cancel)
-        row.addStretch(1)
-        root.addLayout(row)
+        self.btn_later = QPushButton('Позже')
+        self.btn_later.setMinimumHeight(30)
+        self.btn_later.clicked.connect(self._on_later)
+        row.addWidget(self.btn_later)
 
-    def _on_cancel(self):
-        self._cancelled = True
-        self.cancelled.emit()
-        self.reject()
+        self.btn_close = QPushButton('✕')
+        self.btn_close.setFixedWidth(28)
+        self.btn_close.setMinimumHeight(30)
+        self.btn_close.setToolTip('Скрыть до следующего запуска')
+        self.btn_close.clicked.connect(self._on_later)
+        row.addWidget(self.btn_close)
 
-    @property
-    def was_cancelled(self):
-        return self._cancelled
+        # Что сейчас показывает полоса: 'offer', 'downloading', 'ready'.
+        self._state = 'offer'
+        self.hide()
 
-    def on_progress(self, chunk, total):
-        """Обновляет шкалу. Вызывается из фонового потока — только сигналом.
+    def show_offer(self, info, current_version):
+        """Показывает предложение обновиться."""
+        self._state = 'offer'
+        ver = info.tag.lstrip('vV')
+        size = f' · {info.size / 1048576:.0f} МБ' if info.size else ''
+        self.lbl_text.setText(
+            f"Доступна версия {ver} (у вас {current_version}){size}")
+        self.bar.hide()
+        self.btn_action.setText('Обновить')
+        self.btn_action.show()
+        self.btn_later.show()
+        self.show()
 
-        Шаг считаем от total: если GitHub не сообщил размер, шкала
-        останется бегущей (0..0), и человек всё равно видит, что процесс
-        живой.
-        """
-        if self._cancelled:
-            return
+    def show_progress(self, chunk, total):
+        """Показывает ход загрузки."""
+        self._state = 'downloading'
         if total > 0:
-            self._total = total
             self._got = getattr(self, '_got', 0) + chunk
             pct = min(100, int(self._got * 100 / total))
             self.bar.setRange(0, 100)
             self.bar.setValue(pct)
-            self.lbl_info.setText(
-                f'{pct}%  ·  {self._got / 1048576:.1f} '
-                f'из {total / 1048576:.1f} МБ')
+            self.lbl_text.setText(
+                f"Скачиваю обновление: {pct}% "
+                f"({self._got / 1048576:.1f} из {total / 1048576:.1f} МБ)")
         else:
-            # Размер неизвестен — крутим бесконечную шкалу.
             self.bar.setRange(0, 0)
-            self.lbl_info.setText('Загрузка…')
+            self.lbl_text.setText('Скачиваю обновление…')
+        self.bar.show()
+        self.btn_action.hide()
+        self.btn_later.setText('Отмена')
+        self.btn_later.show()
 
+    def show_ready(self):
+        """Загрузка закончена: предлагаем перезапуститься."""
+        self._state = 'ready'
+        self.lbl_text.setText('Обновление скачано и проверено. '
+                              'Перезапустить, чтобы установить?')
+        self.bar.setRange(0, 100)
+        self.bar.setValue(100)
+        self.bar.show()
+        self.btn_action.setText('Перезапустить')
+        self.btn_action.show()
+        self.btn_later.setText('Позже')
+        self.btn_later.show()
+        self.show()
 
-class UpdateDialog(QDialog):
-    """Предложение обновиться до новой версии.
+    def show_error(self, text):
+        """Загрузка не удалась: сообщаем в той же полосе."""
+        self._state = 'offer'
+        self.lbl_text.setText(f'Не удалось скачать обновление: {text}')
+        self.bar.hide()
+        self.btn_action.hide()
+        self.btn_later.setText('Скрыть')
+        self.btn_later.show()
+        self.show()
 
-    Показывает, что нового, и две кнопки: обновить сейчас или отложить.
-    Скачивание начинается только по нажатию — молча ничего не тянем.
-    Отдельная галочка «не предлагать эту версию»: если новая сборка
-    окажется хуже, человек откатится и не должен получать предложение
-    обновиться обратно при каждом запуске.
-    """
+    def reset(self):
+        """Сбрасывает счётчик загрузки перед новой попыткой."""
+        self._got = 0
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
 
-    def __init__(self, parent, info, current_version):
-        super().__init__(parent)
-        self.setWindowTitle('Доступно обновление')
-        self.setMinimumWidth(520)
-        self._info = info
+    def _on_action(self):
+        if self._state == 'ready':
+            self.restart.emit()
+        else:
+            self.accepted.emit()
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 14)
-        root.setSpacing(10)
-
-        title = QLabel(f"TGPlayer {info.tag.lstrip('vV')}")
-        title.setObjectName('about_title')
-        root.addWidget(title)
-
-        sub = QLabel(f"У вас {current_version}. Доступна новая версия.")
-        sub.setObjectName('hint')
-        sub.setWordWrap(True)
-        root.addWidget(sub)
-
-        # Что нового. Описание релиза на GitHub — обычный markdown; теги
-        # срезаем, чтобы в окне не было звёздочек и решёток.
-        notes = self._plain_notes(info.notes)
-        if notes:
-            box = QPlainTextEdit()
-            box.setReadOnly(True)
-            box.setPlainText(notes)
-            box.setMinimumHeight(180)
-            root.addWidget(box, 1)
-
-        if info.size:
-            size_mb = info.size / (1024 * 1024)
-            lbl = QLabel(f"Размер загрузки: {size_mb:.1f} МБ")
-            lbl.setObjectName('hint')
-            root.addWidget(lbl)
-
-        self.chk_skip = QCheckBox('Не предлагать эту версию снова')
-        root.addWidget(self.chk_skip)
-
-        row = QHBoxLayout()
-        self.btn_later = QPushButton('Позже')
-        self.btn_later.clicked.connect(self.reject)
-        self.btn_now = QPushButton('Скачать и установить')
-        self.btn_now.setObjectName('primary')
-        self.btn_now.setMinimumHeight(36)
-        self.btn_now.clicked.connect(self.accept)
-        row.addStretch(1)
-        row.addWidget(self.btn_later)
-        row.addWidget(self.btn_now)
-        root.addLayout(row)
-
-    @staticmethod
-    def _plain_notes(text):
-        """Убирает markdown-разметку из описания релиза."""
-        lines = []
-        for line in (text or '').splitlines():
-            line = line.strip()
-            if not line:
-                lines.append('')
-                continue
-            # «STABLE» — служебная метка канала, человеку она не нужна.
-            if line.upper() == 'STABLE':
-                continue
-            line = re.sub(r'^#{1,6}\s*', '', line)
-            line = re.sub(r'^[-*+]\s+', '• ', line)
-            line = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
-            line = re.sub(r'`(.+?)`', r'\1', line)
-            lines.append(line)
-        return '\n'.join(lines).strip()
-
-    @property
-    def skip_this_version(self):
-        return self.chk_skip.isChecked()
+    def _on_later(self):
+        self.hide()
+        self.dismissed.emit(False)
 
 
 class SettingsDialog(QDialog):
@@ -1511,7 +1488,23 @@ class MainWindow(QMainWindow):
 
         main_lay.addLayout(top_bar)
 
+        # Полоса обновления: живёт прямо в окне, над списками. Появляется
+        # только когда есть новость — предложение, ход загрузки или
+        # готовность к перезапуску. Отдельных окон больше нет.
+        self.update_banner = UpdateBanner(self)
+        self.update_banner.accepted.connect(self._on_update_accepted)
+        self.update_banner.dismissed.connect(self._on_update_dismissed)
+        self.update_banner.restart.connect(self._on_update_restart)
+        main_lay.addWidget(self.update_banner)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Ручку-разделитель не рисуем: между списками оставалась тёмная
+        # «палка», которая выглядела как случайная полоса, а не как
+        # инструмент. Тянуть за неё по-прежнему можно — ширина ручки
+        # равна нулю, но область захвата остаётся.
+        splitter.setHandleWidth(0)
+        splitter.setStyleSheet(
+            'QSplitter::handle { background: transparent; }')
 
         # Список каналов
         self.channel_list = QListWidget()
@@ -1566,7 +1559,20 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(video_pane)
 
-        splitter.setSizes([300, 500])
+        # Ширину списка каналов берём из настроек: человек подбирает её под
+        # себя, и после перезапуска она должна остаться прежней.
+        saved_width = self._setting('channel_list_width', 300)
+        try:
+            saved_width = int(saved_width)
+        except (TypeError, ValueError):
+            saved_width = 300
+        if saved_width < 120:
+            saved_width = 300
+        splitter.setSizes([saved_width, 500])
+        self._splitter = splitter
+        # Движение разделителя запоминаем сразу: иначе ширина терялась бы
+        # при закрытии программы аварийно (крестик в трей, завершение).
+        splitter.splitterMoved.connect(self._on_splitter_moved)
         main_lay.addWidget(splitter)
 
         self.setCentralWidget(central)
@@ -2070,30 +2076,43 @@ class MainWindow(QMainWindow):
         self._offer_update(info)
 
     def _offer_update(self, info):
-        """Показывает окно с предложением обновиться."""
-        dlg = UpdateDialog(self, info, version.VERSION)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            if dlg.skip_this_version:
-                self._set_setting_quiet('skipped_version', info.tag)
+        """Показывает предложение обновиться в полосе внутри окна."""
+        self._pending_update = info
+        self.update_banner.show_offer(info, version.VERSION)
+
+    def _on_update_accepted(self):
+        """Нажали «Обновить» в полосе."""
+        info = getattr(self, '_pending_update', None)
+        if info is None:
             return
-        if dlg.skip_this_version:
-            self._set_setting_quiet('skipped_version', info.tag)
         self._download_and_install(info)
 
-    def _download_and_install(self, info):
-        """Скачивает установщик и запускает его.
+    def _on_update_dismissed(self, skip):
+        """Скрыли полосу: вернёмся к вопросу при следующем запуске."""
+        mark = getattr(self, '_pending_update', None)
+        if skip and mark is not None:
+            self._set_setting_quiet('skipped_version', mark.tag)
 
-        Пока идёт загрузка, показываем окно со шкалой. Окно держим
-        модальным: пока непонятно, что с загрузкой, работать с плеером
-        всё равно не имеет смысла.
+    def _on_update_restart(self):
+        """Нажали «Перезапустить» после скачивания."""
+        path = getattr(self, '_update_setup_path', None)
+        if not path:
+            return
+        self._launch_installer(path)
+
+    def _download_and_install(self, info):
+        """Скачивает установщик, показывая ход в полосе обновления.
+
+        Отдельного окна загрузки больше нет: шкала и проценты живут в
+        полосе, и человек не теряет из виду, что происходит.
         """
         # Временная папка: установщик — временный файл, держать его рядом
         # с программой незачем.
         dest = os.path.join(tempfile.gettempdir(),
                             f'TGPlayer_Setup_{info.tag.lstrip("vV")}.exe')
 
-        ver = info.tag.lstrip('vV')
-        dlg = DownloadDialog(self, f'Скачиваю TGPlayer {ver}')
+        self.update_banner.reset()
+        self.update_banner.show_progress(0, 0)
 
         def worker():
             ok, msg = updates.download(
@@ -2105,22 +2124,21 @@ class MainWindow(QMainWindow):
             # и с проверкой обновлений.
             self._download_done.emit(ok, msg, dest)
 
-        def upload_progress(chunk, total):
-            # Счётчик копим в диалоге, а не в замыкании: так он не растёт
-            # между попытками и не утекает.
-            dlg.on_progress(chunk, total)
+        def on_progress(chunk, total):
+            self.update_banner.show_progress(chunk, total)
 
-        self._download_progress.connect(upload_progress)
-        self._download_done.connect(
-            lambda ok, msg, path: (dlg.accept(),
-                                   self._after_download(ok, msg, path)))
+        def on_done(ok, msg, path):
+            self._after_download(ok, msg, path)
+
+        self._download_progress.connect(on_progress)
+        self._download_done.connect(on_done)
 
         threading.Thread(target=worker, daemon=True,
                          name='update-download').start()
-        dlg.exec()
 
+    def _after_download(self, ok, msg, path):
         try:
-            self._download_progress.disconnect(upload_progress)
+            self._download_progress.disconnect()
         except Exception:
             pass
         try:
@@ -2128,22 +2146,15 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _after_download(self, ok, msg, path):
         if not ok:
             print(f"[Обновление] скачать не удалось: {msg}")
-            QMessageBox.warning(self, 'Обновление',
-                                f'Не удалось скачать обновление.\n\n{msg}')
+            self.update_banner.show_error(msg)
             return
         print(f"[Обновление] скачано, хеш {msg}")
-        answer = QMessageBox.question(
-            self, 'Обновление готово',
-            'Обновление скачано и проверено.\n\n'
-            'Сейчас программа закроется, установится новая версия и '
-            'запустится снова.\n\nПродолжить?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self._launch_installer(path)
+        # Путь запоминаем: установка начнётся, когда человек нажмёт
+        # «Перезапустить» в полосе, а не сразу и без спроса.
+        self._update_setup_path = path
+        self.update_banner.show_ready()
 
     def _launch_installer(self, path):
         """Запускает установщик и закрывает плеер.
@@ -2158,8 +2169,7 @@ class MainWindow(QMainWindow):
                               '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'])
         except Exception as ex:
             print(f"[Обновление] установщик не запустился: {ex}")
-            QMessageBox.warning(self, 'Обновление',
-                                f'Не удалось запустить установщик: {ex}')
+            self.update_banner.show_error(str(ex))
             return
         print("[Обновление] установщик запущен, закрываю плеер")
         # Небольшая пауза: установщику нужно время, чтобы начать, а плееру
@@ -2836,6 +2846,22 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             print(f"[Вход] сигнал не подключён: {ex}")
 
+    def _on_splitter_moved(self, pos, index):
+        """Запоминает ширину списка каналов после движения разделителя.
+
+        Пишем сразу при движении, а не при закрытии окна: программу часто
+        закрывают через трей или завершают аварийно, и тогда сохранение
+        в closeEvent не успевало сработать.
+        """
+        try:
+            sizes = self._splitter.sizes()
+            if sizes:
+                width = int(sizes[0])
+                if width >= 120:
+                    self._set_setting_quiet('channel_list_width', width)
+        except Exception as ex:
+            print(f"[Окно] ширина списка не сохранилась: {ex}")
+
     def _on_login_connection(self, state):
         """Показывает главное окно, когда вход выполнен.
 
@@ -2851,6 +2877,34 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+        # Список каналов заполняем заново уже ПОСЛЕ показа окна.
+        #
+        # Пока окно было скрыто, backend успевал прислать folders_loaded —
+        # но обновление скрытого списка Qt не отрисовывает, и человек
+        # видел пустой список до перезапуска программы. Поэтому берём
+        # данные из backend напрямую и заполняем видимое окно сами.
+        QTimer.singleShot(0, self._refresh_after_login)
+
+    def _refresh_after_login(self):
+        """Заполняет списки данными, которые backend уже загрузил."""
+        try:
+            folders = getattr(self.backend, 'folders', None) or []
+            dialogs = getattr(self.backend, 'dialogs', None) or []
+            print(f"[Вход] восстанавливаю списки: папок "
+                  f"{len(folders)}, каналов {len(dialogs)}")
+            if folders:
+                self.display_folders(folders)
+            elif dialogs:
+                self.display_folders(
+                    [{"title": "Все каналы", "dialogs": dialogs}])
+            # Данные могли не дойти — тогда просим заново, но уже когда
+            # окно видимо и сигнал будет показан.
+            if not folders and not dialogs:
+                self.refresh_data()
+        except Exception as ex:
+            print(f"[Вход] списки не заполнились: {ex}")
+            self.refresh_data()
 
     def refresh_data(self):
         """Перечитывает папки и каналы из Telegram.

@@ -585,6 +585,10 @@ class PlayerWindow(QMainWindow):
 
         Нужна, чтобы переключать серии, не открывая окно с каналами:
         список того же канала, что уже играет, всегда под рукой.
+
+        Ширину можно менять перетаскиванием за левый край, и она
+        запоминается: названия серий бывают длинными, и подобрать ширину
+        один раз удобнее, чем подтягивать каждый запуск.
         """
         panel = QWidget()
         panel.setObjectName('playlistpanel')
@@ -597,9 +601,39 @@ class PlayerWindow(QMainWindow):
         self.list_playlist.setUniformItemSizes(True)
         self.list_playlist.itemClicked.connect(self._on_playlist_click)
         lay.addWidget(self.list_playlist, 1)
-        panel.setFixedWidth(config.PLAYLIST_PANEL_WIDTH)
+
+        width = self._saved_playlist_width()
+        panel.setFixedWidth(width)
+        self._playlist_width = width
+        # Тянуть за левый край: панель стоит справа от видео.
+        panel.installEventFilter(self)
+        panel.setMouseTracking(True)
         panel.hide()
         return panel
+
+    def _saved_playlist_width(self):
+        """Сохранённая ширина панели, либо значение по умолчанию."""
+        try:
+            value = self._setting('playlist_width', 0)
+            value = int(value)
+        except (TypeError, ValueError):
+            value = 0
+        if value < config.PLAYLIST_MIN_WIDTH:
+            return config.PLAYLIST_PANEL_WIDTH
+        return min(value, config.PLAYLIST_MAX_WIDTH)
+
+    def _save_playlist_width(self):
+        """Запоминает текущую ширину панели в настройках."""
+        try:
+            width = int(self.playlist_panel.width())
+            self._playlist_width = width
+            self.backend.set_setting('playlist_width', width)
+        except Exception as ex:
+            print(f"[Плеер] ширина списка не сохранилась: {ex}")
+
+    def _playlist_resize_edge(self, pos):
+        """Находится ли точка у левого края панели (там тянем ширину)."""
+        return pos.x() <= config.PLAYLIST_RESIZE_MARGIN
 
     def _doc_id(self, index):
         """id документа ролика по индексу плейлиста (None, если его нет)."""
@@ -2013,8 +2047,55 @@ class PlayerWindow(QMainWindow):
         self.bar.hide()
         self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
 
+    def _playlist_resize_event(self, event):
+        """Перетаскивание левого края панели списка: меняет её ширину.
+
+        Возвращает True, если событие поглощено: тогда клик по краю не
+        считается кликом по ролику.
+        """
+        t = event.type()
+        panel = self.playlist_panel
+
+        if t == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self._playlist_resize_edge(event.position().toPoint()):
+                    self._resizing_playlist = True
+                    self._resize_start_x = int(event.globalPosition().x())
+                    self._resize_start_w = panel.width()
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                    return True
+
+        elif t == QEvent.Type.MouseMove:
+            if getattr(self, '_resizing_playlist', False):
+                # Панель справа: тянем влево — она шире.
+                dx = self._resize_start_x - int(event.globalPosition().x())
+                width = self._resize_start_w + dx
+                width = max(config.PLAYLIST_MIN_WIDTH,
+                            min(width, config.PLAYLIST_MAX_WIDTH))
+                panel.setFixedWidth(width)
+                return True
+            # Курсор над краем — показываем, что тут можно тянуть.
+            over = self._playlist_resize_edge(event.position().toPoint())
+            self.setCursor(Qt.CursorShape.SizeHorCursor if over
+                           else Qt.CursorShape.ArrowCursor)
+
+        elif t == QEvent.Type.MouseButtonRelease:
+            if getattr(self, '_resizing_playlist', False):
+                self._resizing_playlist = False
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+                self._save_playlist_width()
+                return True
+
+        return False
+
     def eventFilter(self, obj, event):
         t = event.type()
+
+        # Ширина панели списка в плеере: тянем за левый край.
+        if obj is getattr(self, 'playlist_panel', None):
+            handled = self._playlist_resize_event(event)
+            if handled:
+                return True
 
         # Окно PiP меняет размер или переезжает — панель следует за ним.
         # Панель отдельное окно, сама она за PiP не едет: без этого
