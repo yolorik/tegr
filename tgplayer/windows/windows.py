@@ -1790,10 +1790,27 @@ class MainWindow(QMainWindow):
 
         def on_done(status):
             dlg.accept()
-            if status == 'ok':
-                self.set_status('Вход выполнен')
-                # Данные загрузим заново: только что вошли в аккаунт.
-                self.backend.submit_coroutine(self.backend.refresh_catalogs())
+            if status != 'ok':
+                return
+            self.set_status('Вход выполнен')
+            # Показываем окно и только потом грузим данные.
+            #
+            # Здесь была ошибка: вызывался только refresh_catalogs, а окно
+            # так и оставалось скрытым — программы будто нет, каналов нет.
+            # Причина в том, что основной цикл подключения в этот момент
+            # ещё ждёт ответа на шаг номера и до своего показа не дойдёт:
+            # человек выбрал QR, номера не будет.
+            #
+            # Флаг ready ставим ДО загрузки: submit_coroutine без него
+            # молча выбрасывает задачу, и данные не запрашивались вовсе —
+            # список оставался пустым.
+            self.backend.ready = True
+            self._on_login_connection('ok')
+            # Данные грузим один раз: refresh_catalogs сам вызывает
+            # load_data и рассылает folders_loaded. Повторный вызов в
+            # _on_login_connection к этому моменту уже прошёл (данных
+            # ещё нет), поэтому здесь он и нужен.
+            self.backend.submit_coroutine(self.backend.refresh_catalogs())
 
         self._qr_done.connect(on_done)
         worker()
