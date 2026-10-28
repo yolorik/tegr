@@ -29,8 +29,8 @@ from PyQt6.QtWidgets import (
     QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton,
-    QScrollArea, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
-    QWidget, QWidgetAction)
+    QScrollArea, QSizePolicy, QSplitter, QStatusBar, QSystemTrayIcon,
+    QVBoxLayout, QWidget, QWidgetAction)
 
 from ..core import config, history, log, paths, proxy, theme, updates, utils, version
 from ..core import settings as app_settings
@@ -404,9 +404,14 @@ class UpdateBanner(QWidget):
         self.setStyleSheet(
             'QWidget#updatebanner { background: rgba(82, 136, 193, 0.18);'
             ' border-radius: 8px; }')
+        # Полоса не должна раздуваться на всю доступную высоту: без этого
+        # она занимала треть окна и оттесняла списки вниз.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Maximum)
+        self.setMaximumHeight(52)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 8, 8)
+        row.setContentsMargins(12, 6, 8, 6)
         row.setSpacing(10)
 
         self.lbl_text = QLabel('')
@@ -480,8 +485,9 @@ class UpdateBanner(QWidget):
     def show_ready(self):
         """Загрузка закончена: предлагаем перезапуститься."""
         self._state = 'ready'
-        self.lbl_text.setText('Обновление скачано и проверено. '
-                              'Перезапустить, чтобы установить?')
+        # Текст короткий намеренно: длинный переносится на вторую строку,
+        # и полоса становится выше соседних состояний.
+        self.lbl_text.setText('Обновление скачано и проверено.')
         self.bar.setRange(0, 100)
         self.bar.setValue(100)
         self.bar.show()
@@ -2159,6 +2165,12 @@ class MainWindow(QMainWindow):
         def on_done(ok, msg, path):
             self._after_download(ok, msg, path)
 
+        # Запоминаем обработчики, чтобы потом отключить именно их.
+        # disconnect() без аргументов снимает ВСЕХ получателей сигнала —
+        # вместе с теми, что подключены в других местах, и они перестают
+        # работать до перезапуска программы.
+        self._dl_progress_slot = on_progress
+        self._dl_done_slot = on_done
         self._download_progress.connect(on_progress)
         self._download_done.connect(on_done)
 
@@ -2166,14 +2178,16 @@ class MainWindow(QMainWindow):
                          name='update-download').start()
 
     def _after_download(self, ok, msg, path):
-        try:
-            self._download_progress.disconnect()
-        except Exception:
-            pass
-        try:
-            self._download_done.disconnect()
-        except Exception:
-            pass
+        for signal, attr in ((self._download_progress, '_dl_progress_slot'),
+                             (self._download_done, '_dl_done_slot')):
+            slot = getattr(self, attr, None)
+            if slot is None:
+                continue
+            try:
+                signal.disconnect(slot)
+            except Exception:
+                pass
+            setattr(self, attr, None)
 
         if not ok:
             print(f"[Обновление] скачать не удалось: {msg}")
