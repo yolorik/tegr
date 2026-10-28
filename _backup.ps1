@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root    = "C:\tgplayer"
+$root = $PSScriptRoot
 $backups = Join-Path $root "_backups"
 
 function Make-Backup {

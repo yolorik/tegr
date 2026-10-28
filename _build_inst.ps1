@@ -1,4 +1,7 @@
 ﻿$ErrorActionPreference = 'Continue'
+# Папка проекта — от расположения этого скрипта, а не жёстким путём:
+# после переноса проекта сборка искала исходники в старом месте.
+$root = $PSScriptRoot
 # Сборка установщика. Результат кладём в releases\<версия>\ — рядом с
 # ним же описание и контрольная сумма, готовая к выкладке на GitHub.
 #
@@ -10,10 +13,10 @@ $py   = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
 
 # Версию берём из единственного источника, чтобы имя папки не разъехалось
 # с тем, что подписано внутри.
-$ver = (& $py -c "import sys; sys.path.insert(0, r'C:\tgplayer'); from tgplayer.core import version as v; print(v.VERSION)").Trim()
+$ver = (& $py -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.VERSION)").Trim()
 if (-not $ver) { Write-Output 'не удалось прочитать версию'; exit 1 }
 
-$dir = Join-Path 'C:\tgplayer\releases' $ver
+$dir = Join-Path (Join-Path $root 'releases') $ver
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Write-Output "версия: $ver"
 Write-Output "папка:  $dir"
@@ -23,7 +26,7 @@ Write-Output "папка:  $dir"
 $done = $false
 for ($i = 1; $i -le 8; $i++) {
     Write-Output "попытка $i"
-    & $iscc "/O$dir" 'C:\tgplayer\installer\tgplayer.iss' 2>&1 | Select-Object -Last 4
+    & $iscc "/O$dir" (Join-Path $root 'installer\tgplayer.iss') 2>&1 | Select-Object -Last 4
     if ($LASTEXITCODE -eq 0) { $done = $true; break }
     Start-Sleep -Seconds 8
 }
