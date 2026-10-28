@@ -21,7 +21,7 @@
 ; (tgplayer/core/version.py): 2.7.0d, где буква — схема загрузчика.
 ; Сверяйте при сборке: установщик обёртывает уже собранный .exe, и если
 ; .exe пересобрали с новой версией, здесь её надо поднять руками.
-#define AppVersion "2.9.0d"
+#define AppVersion "3.0.0d"
 #define AppExe "TGPlayer.exe"
 #define SrcDir "H:\deepseek projects\tgplayer\dist\TGPlayer"
 

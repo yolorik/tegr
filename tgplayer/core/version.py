@@ -25,8 +25,8 @@
 снова станет непонятно, что внутри.
 """
 
-MAJOR = 2
-MINOR = 9
+MAJOR = 3
+MINOR = 0
 PATCH = 0
 LOADER = 'd'
 
