@@ -50,8 +50,13 @@ DEFAULT_THEME = 'telegram'
 # выбрал пользователь. Поэтому она живёт отдельно от TG_THEMES, где
 # лежат только готовые палитры, и попадает в список тем через заголовки.
 CUSTOM_THEME = 'custom'
+# Системная тема: палитры у неё тоже нет, как у своей. Она берёт одну из
+# готовых — тёмную или светлую — по тому, в каком режиме Windows. Какой
+# именно ключ подставить, спрашивает system_theme_key().
+SYSTEM_THEME = 'system'
 THEME_TITLES = {key: pal['title'] for key, pal in TG_THEMES.items()}
 THEME_TITLES[CUSTOM_THEME] = 'Своя — из двух цветов'
+THEME_TITLES[SYSTEM_THEME] = 'Системная — как в Windows'
 _theme_key = DEFAULT_THEME
 
 # Два цвета своей темы: основной (фон) и акцентный.
@@ -168,19 +173,58 @@ def custom_colors():
     return _custom_bg, _custom_accent
 
 
+def _system_resolved_key():
+    """Какой готовой палитрой прикидывается системная тема сейчас.
+
+    Чтение из реестра держим в icons: оттуда же его берёт значок в трее,
+    и второй копии того же кода быть не должно. Но и сюда его не тяну
+    безусловно — theme не должен зависеть от модуля значков, который
+    тянет Qt. Поэтому вызываем по месту и при ошибке остаёмся тёмными.
+    """
+    try:
+        from ..icons import icons
+        return icons.system_theme_key()
+    except Exception:
+        return SYSTEM_DARK_THEME_FALLBACK
+
+
+SYSTEM_DARK_THEME_FALLBACK = 'telegram'
+
+
 def theme(key=None):
     """Палитра темы: по ключу или текущая."""
     k = key or _theme_key
     if k == CUSTOM_THEME:
         return derive_palette(_custom_bg, _custom_accent)
+    if k == SYSTEM_THEME:
+        # Системная — не отдельная палитра, а указатель: какая тема
+        # Windows, такую готовую палитру и берём.
+        k = _system_resolved_key()
     return TG_THEMES.get(k, TG_THEMES[DEFAULT_THEME])
+
+
+def resolved_theme_key(key=None):
+    """Ключ готовой палитры, которая сейчас на экране.
+
+    Нужен там, где важен не цвет, а именно выбор: например, при пересчёте
+    оформления — чтобы понять, поменялась ли системная тема на другую.
+    """
+    k = key or _theme_key
+    if k == SYSTEM_THEME:
+        return _system_resolved_key()
+    return k
 
 
 def set_theme_key(key):
     """Запоминает выбранную тему. Неизвестный ключ игнорируется."""
     global _theme_key
-    if key == CUSTOM_THEME or key in TG_THEMES:
+    if key in (CUSTOM_THEME, SYSTEM_THEME) or key in TG_THEMES:
         _theme_key = key
+    return _theme_key
+
+
+def theme_key():
+    """Ключ выбранной темы — с учётом того, что это может быть системная."""
     return _theme_key
 
 

@@ -641,8 +641,17 @@ class SettingsDialog(QDialog):
         pos = self.cmb_theme.findData(values.get('theme', theme.DEFAULT_THEME))
         self.cmb_theme.setCurrentIndex(pos if pos >= 0 else 0)
         self.cmb_theme.currentIndexChanged.connect(
-            lambda: self._emit('theme', self.cmb_theme.currentData()))
+            lambda *_: self._on_theme_picked())
         look_lay.addRow('Тема:', self.cmb_theme)
+
+        # Подсказка про системную тему: по одному названию в списке не
+        # понять, какой она будет сейчас. Поэтому показываем, что именно
+        # Windows предлагает в этот момент.
+        self.lbl_system_theme = QLabel()
+        self.lbl_system_theme.setObjectName('hint')
+        self.lbl_system_theme.setWordWrap(True)
+        look_lay.addRow('', self.lbl_system_theme)
+        self._update_system_theme_hint()
 
         # Своя тема собирается из двух цветов — так её и задаём: остальные
         # оттенки выводятся из них автоматически.
@@ -857,6 +866,31 @@ class SettingsDialog(QDialog):
             self.cmb_theme.blockSignals(False)
             self._emit('theme', theme.CUSTOM_THEME)
         self._emit(key, value)
+
+    def _on_theme_picked(self):
+        """Выбрали другую тему в списке."""
+        key = self.cmb_theme.currentData()
+        self._update_system_theme_hint()
+        self._emit('theme', key)
+
+    def _update_system_theme_hint(self):
+        """Поясняет под списком, что даст системная тема прямо сейчас."""
+        try:
+            light = icons.system_uses_light_theme()
+            if self.cmb_theme.currentData() == theme.SYSTEM_THEME:
+                self.lbl_system_theme.setText(
+                    'Сейчас в Windows ' + ('светлое' if light else 'тёмное')
+                    + ' оформление — программа будет ' 
+                    + ('светлой' if light else 'тёмной')
+                    + ' и переключится вслед за системой.')
+            else:
+                self.lbl_system_theme.setText(
+                    'В Windows сейчас ' + ('светлое' if light else 'тёмное')
+                    + ' оформление.')
+            self.lbl_system_theme.setVisible(
+                self.cmb_theme.currentData() == theme.SYSTEM_THEME)
+        except Exception:
+            self.lbl_system_theme.setVisible(False)
 
     def set_conn_status(self, text):
         """Показывает состояние подключения прямо в окне настроек."""
@@ -2004,9 +2038,15 @@ class MainWindow(QMainWindow):
         # Тему Windows можно переключить при работающей программе — свет
         # и тьму панели задач. Значок обязан перекраситься сразу, иначе
         # он проживёт до перезапуска невидимым на новом фоне.
+        #
+        # Тот же опрос переключает и оформление, если выбрана системная
+        # тема: два отдельных таймера читали бы один и тот же ключ реестра
+        # независимо друг от друга.
+        self._system_theme_was_light = None
         self._tray_theme = theme_watch = QTimer(self)
         theme_watch.setInterval(TRAY_THEME_POLL_MS)
         theme_watch.timeout.connect(self._poll_tray_theme)
+        theme_watch.timeout.connect(self._poll_system_theme)
         theme_watch.start()
 
     def _poll_tray_theme(self):
@@ -2154,6 +2194,23 @@ class MainWindow(QMainWindow):
                 pw.bar.refresh_icons()
             except Exception:
                 pass
+
+    def _poll_system_theme(self):
+        """Переключает оформление, если в Windows сменили режим.
+
+        Работает только при выбранной системной теме: при любой другой
+        программа следует своему выбору, а не настройкам Windows.
+        """
+        if theme.theme_key() != theme.SYSTEM_THEME:
+            self._system_theme_was_light = None
+            return
+        light = icons.system_uses_light_theme()
+        if light == self._system_theme_was_light:
+            return
+        self._system_theme_was_light = light
+        print(f"[Тема] Windows перешла на "
+              f"{'светлое' if light else 'тёмное'} оформление")
+        self._apply_theme()
 
     # --- Обновления -----------------------------------------------------
 

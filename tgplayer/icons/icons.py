@@ -236,11 +236,53 @@ def system_uses_light_panel():
         return False
 
 
+# Системная тема программы: какие готовые палитры соответствуют светлому
+# и тёмному режиму Windows. Светлая и тёмная темы уже выверены по всем
+# пятнадцати оттенкам, поэтому подставляем их напрямую, а не собираем
+# палитру заново.
+SYSTEM_LIGHT_THEME = 'telegram_light'
+SYSTEM_DARK_THEME = 'telegram'
+
+
+def system_uses_light_theme():
+    """Светлое ли оформление Windows.
+
+    Режим приложений — отдельный признак (AppsUseLightTheme): Windows
+    красит окна программ по нему, а панель задач можно держать тёмной.
+    Программа — это приложение, поэтому смотрим именно на него.
+
+    Читаем в момент вызова: тему Windows меняют при работающей
+    программе, и оформление обязано последовать за ней сразу, а не после
+    перезапуска.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion'
+                r'\Themes\Personalize') as key:
+            value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+        return bool(int(value))
+    except Exception:
+        # Нет ветки или Windows не поддерживает тему приложений —
+        # считаем тёмной. Так оформление остаётся прежним, каким было до
+        # появления системной темы, и не удивляет светлым окном тех, у
+        # кого настройки нет вовсе.
+        return False
+
+
+def system_theme_key():
+    """Ключ готовой палитры по режиму Windows."""
+    return (SYSTEM_LIGHT_THEME if system_uses_light_theme()
+            else SYSTEM_DARK_THEME)
+
+
 # Цвета значка «под трей». Оба — не чистые белый и чёрный: на светлой
 # панели смотрится мягкий графит, на тёмной — почти белый с той же
 # лёгкой сероватостью, что и в исходной картинке.
 TRAY_COLOR_LIGHT_PANEL = '#2b2f36'
 TRAY_COLOR_DARK_PANEL = '#fbfcfd'
+
 
 
 def tray_glyph_color():
