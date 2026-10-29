@@ -8,17 +8,26 @@
 # угодно, и сборка продолжит работать.
 
 $root = $PSScriptRoot
-$nm = 'TGPlayer'
+# Имя приложения берётся из version.py, а не задаётся здесь второй раз:
+# при переименовании одно из двух мест обязательно отставало бы, и .exe
+# назывался бы старым именем.
+$nm = (& 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe' -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.APP_NAME)" | Select-Object -First 1).Trim()
+if (-not $nm) { Write-Output 'не удалось прочитать имя программы'; exit 1 }
 $mod = 'player_deepseek'
-$dst = Join-Path $root 'dist\TGPlayer'
+$dst = Join-Path $root "dist\$nm"
 $bak = Join-Path $root '_build_data'
 $build = Join-Path $root 'build'
 $data = @('my_player_session.session', 'proxy.txt', 'history.json', 'settings.json')
 
 $p = Get-Process -Name $nm -ErrorAction SilentlyContinue
 if ($p) { Write-Output 'ВНИМАНИЕ: плеер запущен, закройте его'; exit 1 }
+# Старое имя тоже проверяем: пока плеер запущен под ним, файлы сессии
+# заняты, и сборка получится с данными, снятыми наполовину.
+$pOld = Get-Process -Name 'TGPlayer' -ErrorAction SilentlyContinue
+if ($pOld) { Write-Output 'ВНИМАНИЕ: запущен TGPlayer, закройте его'; exit 1 }
 Write-Output 'плеер не запущен'
 Write-Output "папка проекта: $root"
+Write-Output "имя приложения: $nm"
 
 New-Item -ItemType Directory -Force -Path $bak | Out-Null
 foreach ($f in $data) {
@@ -49,6 +58,12 @@ $vi = $vi -replace 'filevers=\([^)]*\)', "filevers=($vtuple)"
 $vi = $vi -replace 'prodvers=\([^)]*\)', "prodvers=($vtuple)"
 $vi = $vi -replace "(?<=StringStruct\(u'FileVersion', u')[^']*", $ver
 $vi = $vi -replace "(?<=StringStruct\(u'ProductVersion', u')[^']*", $ver
+# Имя программы подставляем в свойства файла тоже: иначе в проводнике у
+# Tegr.exe осталось бы ProductName от прежнего названия.
+$vi = $vi -replace "(?<=StringStruct\(u'ProductName', u')[^']*", $nm
+$vi = $vi -replace "(?<=StringStruct\(u'CompanyName', u')[^']*", $nm
+$vi = $vi -replace "(?<=StringStruct\(u'InternalName', u')[^']*", $nm
+$vi = $vi -replace "(?<=StringStruct\(u'OriginalFilename', u')[^']*", "$nm.exe"
 if ($verNote) {
     $vi = $vi -replace "(?<=StringStruct\(u'Comments', u')[^']*", $verNote
 }

@@ -13,6 +13,7 @@
 import os
 
 from . import paths
+from . import version as _version
 
 # Каталог данных берётся один раз на старте: точка входа назначает его до
 # импорта остальных модулей (см. paths.set_base_dir). Менять BASE_DIR на
@@ -25,7 +26,12 @@ SESSION_NAME = os.path.join(BASE_DIR, 'my_player_session')
 CACHE_DIR = os.path.join(BASE_DIR, 'stream_cache')
 
 # Название программы: идёт в заголовок окна и в подписи.
-APP_TITLE = 'TGPlayer'
+#
+# Берётся из version.APP_NAME, а не задаётся здесь второй раз: раньше имя
+# жило в двух местах, и при переименовании одно из них обязательно
+# отставало. Заголовок окна, значок в трее и «О программе» показывали
+# разные имена.
+APP_TITLE = _version.APP_NAME
 
 # Файл истории просмотров рядом с программой.
 HISTORY_FILE = 'history.json'

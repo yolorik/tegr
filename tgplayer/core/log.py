@@ -36,7 +36,7 @@ def log_dir():
         # Программу могли поставить в защищённый каталог: тогда пишем во
         # временный, лишь бы журнал был хоть где-то.
         return os.path.join(os.environ.get('TEMP')
-                            or os.environ.get('TMP') or '.', 'TGPlayer')
+                            or os.environ.get('TMP') or '.', 'Tegr')
 
 
 def log_path():

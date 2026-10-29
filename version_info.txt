@@ -19,13 +19,13 @@ VSVersionInfo(
       [
         StringTable(
           u'041904E3',
-          [StringStruct(u'CompanyName', u'TGPlayer'),
-           StringStruct(u'FileDescription', u'TG Player — видеоплеер для Telegram'),
+          [StringStruct(u'CompanyName', u'Tegr'),
+           StringStruct(u'FileDescription', u'Tegr — видеоплеер для Telegram'),
            StringStruct(u'FileVersion', u'2.5.0d'),
-           StringStruct(u'InternalName', u'TGPlayer'),
+           StringStruct(u'InternalName', u'Tegr'),
            StringStruct(u'LegalCopyright', u''),
-           StringStruct(u'OriginalFilename', u'TGPlayer.exe'),
-           StringStruct(u'ProductName', u'TG Player'),
+           StringStruct(u'OriginalFilename', u'Tegr.exe'),
+           StringStruct(u'ProductName', u'Tegr'),
            StringStruct(u'ProductVersion', u'2.5.0d'),
            StringStruct(u'Comments', u'схема загрузчика: d')])
       ]

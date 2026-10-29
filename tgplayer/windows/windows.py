@@ -2255,7 +2255,7 @@ class MainWindow(QMainWindow):
         # Временная папка: установщик — временный файл, держать его рядом
         # с программой незачем.
         dest = os.path.join(tempfile.gettempdir(),
-                            f'TGPlayer_Setup_{info.tag.lstrip("vV")}.exe')
+                            f'{version.APP_NAME}_Setup_{info.tag.lstrip("vV")}.exe')
 
         self.update_banner.reset()
         self.update_banner.show_progress(0, 0)
@@ -3527,6 +3527,10 @@ def _single_instance_guard():
         return True
     try:
         kernel32 = ctypes.windll.kernel32
+        # Имя мьютекса не меняем вместе с названием программы. Оно
+        # нужно, чтобы два экземпляра не делили одну сессию Telegram, —
+        # а старый TGPlayer и новый Tegr делят именно её. С новым именем
+        # они запустились бы оба и испортили файл сессии.
         handle = kernel32.CreateMutexW(None, False, 'TGPlayerSingleInstance')
         if not handle:
             return True

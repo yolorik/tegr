@@ -1,4 +1,9 @@
-; Установщик TGPlayer.
+; Установщик Tegr.
+;
+; Раньше программа называлась TGPlayer. AppId оставлен прежним нарочно:
+; по нему установщик узнаёт уже поставленную программу и обновляет её на
+; месте. Смени его — и Windows завела бы вторую установку рядом с первой,
+; а у человека остались бы два значка в меню «Пуск» и два ключа удаления.
 ;
 ; Права администратора запрашиваются ВСЕГДА.
 ;
@@ -16,25 +21,39 @@
 ; настройки и лог — это данные того компьютера, где собирался установщик.
 ; proxy.txt, наоборот, кладём: это шаблон с подсказками, без секретов.
 
-#define AppName "TGPlayer"
-; Версия установщика. Держим в том же формате, что и сам плеер
-; (tgplayer/core/version.py): 2.7.0d, где буква — схема загрузчика.
-; Сверяйте при сборке: установщик обёртывает уже собранный .exe, и если
-; .exe пересобрали с новой версией, здесь её надо поднять руками.
-#define AppVersion "3.0.3"
-#define AppExe "TGPlayer.exe"
-#define SrcDir "H:\deepseek projects\tgplayer\dist\TGPlayer"
+; Имена должны совпадать с тем, что в tgplayer/core/version.py и куда
+; собирает _build.ps1. Папка выпуска и имя установщика подставляются
+; сборщиком (_build_inst.ps1) — здесь только значения по умолчанию.
+#ifndef AppName
+  #define AppName "Tegr"
+#endif
+#ifndef AppVersion
+  #define AppVersion "3.1.0"
+#endif
+#ifndef AppExe
+  #define AppExe "Tegr.exe"
+#endif
+#ifndef SrcDir
+  #define SrcDir "H:\deepseek projects\tgplayer\dist\Tegr"
+#endif
 
 [Setup]
 AppId={{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=TGPlayer
+AppPublisher={#AppName}
 ; Путь по умолчанию: Program Files для всех пользователей, когда установка
 ; идёт с правами администратора. {autopf} при таком режиме раскрывается
 ; именно туда — и теперь это работает, потому что права уже есть.
-DefaultDirName={autopf}\{#AppName}
+;
+; Папка — старая, TGPlayer, хотя программа теперь называется Tegr. Так
+; обновление ложится поверх прежней установки и втягивает новое имя: без
+; этого в Program Files оказались бы две папки, старая с прошлой версией
+; и новая, а старая так и оставалась бы рядом. После первого же
+; обновления папка станет Tegr — она задаётся значением по умолчанию, и
+; при следующей установке уже выбрана новая.
+DefaultDirName={autopf}\TGPlayer
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 ; Права администратора запрашиваются всегда. Это главное изменение:
@@ -45,7 +64,7 @@ PrivilegesRequired=admin
 DisableDirPage=no
 UsePreviousLanguage=no
 ; OutputDir задаёт _build_inst.ps1: установщик кладётся в releases\<версия>.
-OutputBaseFilename=TGPlayer_Setup
+OutputBaseFilename={#AppName}_Setup
 SetupIconFile=H:\deepseek projects\tgplayer\tgplayer.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
@@ -75,7 +94,7 @@ Name: "{group}\Удалить {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-; Обычная установка: галочка «Запустить TGPlayer» на последней странице.
+; Обычная установка: галочка «Запустить {#AppName}» на последней странице.
 ; В тихом режиме (обновление из самого плеера) этот пункт пропускается —
 ; вместо него работает [Code].
 Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
@@ -114,14 +133,16 @@ function InitializeSetup(): Boolean;
 var
   UninstallKey: String;
 begin
-  // Обычно папка программы — {autopf}\TGPlayer, и проверки хватит одной.
-  // Но человек вправе поставить программу куда угодно, поэтому смотрим и
-  // в реестр. Скобки в имени раздела удваиваем: в Pascal Script они
-  // служебные, и без удвоения ключ выходит несуществующим.
+  // Обычно папка программы — {autopf}\TGPlayer (у тех, кто ещё не
+  // обновился) или {autopf}\Tegr, но человек вправе поставить программу
+  // куда угодно, поэтому вдобавок смотрим в реестр. Скобки в имени
+  // раздела удваиваем: в Pascal Script они служебные, и без удвоения
+  // ключ выходит несуществующим.
   UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\'
                   + '{{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}}_is1';
   RunAfterUpdate := WizardSilent() and
-                    (FileExists(ExpandConstant('{autopf}\{#AppName}\unins000.exe'))
+                    (FileExists(ExpandConstant('{autopf}\TGPlayer\unins000.exe'))
+                     or FileExists(ExpandConstant('{autopf}\Tegr\unins000.exe'))
                      or RegKeyExists(HKLM, UninstallKey));
   Log('RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate))
       + ' key=' + UninstallKey);
@@ -156,6 +177,7 @@ begin
   else
     Log('Запуск не удался, код ' + IntToStr(ErrCode));
 end;
+
 
 
 

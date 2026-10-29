@@ -8,8 +8,9 @@
 Формат релиза, на который рассчитан модуль:
 
     тег:   v2.5.0            (числа, без буквы — так принято в semver)
-    имя:   TGPlayer 2.5.0d   (буква — схема загрузчика, в имени)
-    файлы: TGPlayer_Setup.exe
+    имя:   Tegr 3.1.0d      (буква — схема загрузчика, в имени)
+    файлы: Tegr_Setup.exe
+           TGPlayer_Setup.exe (прежнее имя, нужно старым сборкам)
            SHA256.txt        (одна строка: хеш установщика)
 
 Канал обновлений:
@@ -35,14 +36,20 @@ API_LATEST = f'https://api.github.com/repos/{REPO}/releases'
 RELEASES_PAGE = f'https://github.com/{REPO}/releases'
 
 # Имя файла установщика в релизе.
-SETUP_ASSET = 'TGPlayer_Setup.exe'
+#
+# Список, а не одно имя: программа искала установщик под именем
+# «TGPlayer_Setup.exe», а после переименования в Tegr он стал
+# «Tegr_Setup.exe». Старые сборки, которые ещё у людей, ищут прежнее имя —
+# им надо находить новый файл, иначе обновление молча ломается. Поэтому
+# берём любой из списка: порядок — «сначала новое имя».
+SETUP_ASSETS = ('Tegr_Setup.exe', 'TGPlayer_Setup.exe')
 HASH_ASSET = 'SHA256.txt'
 
 # Сколько ждать ответа GitHub. Проверка идёт в фоне и не должна висеть:
 # на медленной сети человек ждёт запуска, а не обновления.
 TIMEOUT = 12.0
 
-USER_AGENT = f'TGPlayer/{version.VERSION}'
+USER_AGENT = f'{version.APP_NAME}/{version.VERSION}'
 
 
 class UpdateInfo:
@@ -151,10 +158,15 @@ def check(channel='stable'):
 
         # Есть обновление — ищем в нём установщик и хеш.
         setup_url = hash_url = None
+        setup_name = ''
         size = 0
         for asset in rel.get('assets') or []:
             name = asset.get('name') or ''
-            if name == SETUP_ASSET:
+            if name in SETUP_ASSETS:
+                # Нужно имя первого попавшегося файла: раньше оно
+                # совпадало с SETUP_ASSET, но теперь имён два, и брать
+                # надо то, которое реально есть в релизе.
+                setup_name = name
                 setup_url = asset.get('browser_download_url')
                 size = int(asset.get('size') or 0)
             elif name == HASH_ASSET:
@@ -171,6 +183,7 @@ def check(channel='stable'):
             size=size,
             page=rel.get('html_url') or RELEASES_PAGE,
         )
+        info.setup_name = setup_name
         return info, ''
 
     return None, 'новых версий нет'

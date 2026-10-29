@@ -44,6 +44,12 @@ if getattr(sys, 'frozen', False):
 else:
     _APP_HOME = _HERE
 
+# Имена папки данных в профиле пользователя. Текущее и прежнее: программа
+# раньше называлась TGPlayer, и у тех, кто уже обновился, вход, настройки
+# и история лежат в папке со старым именем. См. _profile_dir.
+APP_FOLDER = 'Tegr'
+OLD_PROFILE_NAME = 'TGPlayer'
+
 
 def _data_home(app_home):
     """Выбирает папку для данных: рядом с программой или в профиле.
@@ -111,13 +117,27 @@ def _needs_profile(app_home):
 
 
 def _profile_dir(app_home):
-    """Папка данных в профиле пользователя, с переносом старых файлов."""
+    """Папка данных в профиле пользователя, с переносом старых файлов.
+
+    Раньше профиль назывался TGPlayer — по прежнему имени программы.
+    Теперь он Tegr, но старую папку тоже проверяем: у всех, кто уже
+    обновился, вход, настройки и история лежат именно там. Найти их и
+    перенести в новую — единственный способ не заставить человека
+    входить заново и заново настраивать тему.
+
+    Сначала смотрим в LOCALAPPDATA по обоим именам, потом в APPDATA:
+    старые версии писали в Local, но на всякий случай проверяем и
+    Roaming.
+    """
     base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
     if not base:
         base = os.path.join(os.path.expanduser('~'), 'AppData', 'Local')
-    target = os.path.join(base, 'TGPlayer')
+    target = os.path.join(base, APP_FOLDER)
     try:
         os.makedirs(target, exist_ok=True)
+        # Сначала — данные из прежнего профиля (TGPlayer), потом то, что
+        # лежит рядом с программой. Порядок важен: в профиле свежее.
+        _adopt_existing(_old_profile_dir(base), target)
         # Переносим то, что уже лежит рядом с программой: настройки,
         # историю, вход. Иначе после установки в Program Files человек
         # остался бы без своего аккаунта и настроек.
@@ -127,6 +147,12 @@ def _profile_dir(app_home):
         # Даже профиль недоступен — остаёмся рядом с программой и
         # пытаемся работать как есть. Ошибку покажет обычный путь.
         return app_home
+
+
+def _old_profile_dir(base):
+    """Профиль программы под прежним именем, или пустая строка."""
+    old = os.path.join(base, OLD_PROFILE_NAME)
+    return old if os.path.isdir(old) else ''
 
 
 def _adopt_existing(src, dst):
