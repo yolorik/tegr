@@ -213,6 +213,42 @@ SCROLLBAR_THICKNESS = 14
 TRAY_ICON_SIZE = 128
 
 
+def system_uses_light_panel():
+    """Светлый ли трей в Windows.
+
+    Панель задач и трей красятся по тому же признаку, что и системные
+    окна, а он лежит в ветке Personalize: SystemUsesLightTheme = 1.
+    Значение читаем в момент вызова: человек может переключить тему
+    Windows при работающей программе, и значок обязан перекраситься.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion'
+                r'\Themes\Personalize') as key:
+            value, _ = winreg.QueryValueEx(key, 'SystemUsesLightTheme')
+        return bool(int(value))
+    except Exception:
+        # Нет ветки или другого признака — считаем, что трей тёмный. Так
+        # белый знак остаётся белым, и это заведомо безопаснее ошибки в
+        # обратную сторону.
+        return False
+
+
+# Цвета значка «под трей». Оба — не чистые белый и чёрный: на светлой
+# панели смотрится мягкий графит, на тёмной — почти белый с той же
+# лёгкой сероватостью, что и в исходной картинке.
+TRAY_COLOR_LIGHT_PANEL = '#2b2f36'
+TRAY_COLOR_DARK_PANEL = '#fbfcfd'
+
+
+def tray_glyph_color():
+    """Цвет самолётика для значка в трее."""
+    return (TRAY_COLOR_LIGHT_PANEL if system_uses_light_panel()
+            else TRAY_COLOR_DARK_PANEL)
+
+
 def cursor_size():
     """Размер системного курсора в точках.
 

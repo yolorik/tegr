@@ -45,6 +45,11 @@ from ..backend.backend import TelegramBackend
 TOPBAR_FOLDER_STRETCH = 1
 TOPBAR_SEARCH_STRETCH = 3
 
+# Как часто проверяем, светлая ли панель задач: значок трея подбирает под
+# неё цвет. Раз в две секунды — это два чтения из реестра, а переключение
+# темы Windows за это время человек и не заметит.
+TRAY_THEME_POLL_MS = 2000
+
 
 class QrLoginDialog(QDialog):
     """Вход по QR-коду: телефон сканирует картинку с экрана.
@@ -1688,7 +1693,12 @@ class MainWindow(QMainWindow):
 
         Заменяем с запасом по близости: не «ровно #FF00FF», а всё, что
         похоже на маджента. Так захватываются и сглаженные края заливки.
-        Белые и синеватые плоскости далеко от этого цвета, их не трогаем.
+
+        На светлом трее белый самолётик не виден вовсе — на светлой
+        панели Windows он попросту исчезает. Поэтому цвет плоскостей
+        берётся по теме трея: на светлой панели знак тёмный. Оттенки
+        внутри значка сохраняются (см. _retint_planes), иначе самолётик
+        стал бы плоским пятном.
         """
         path = paths.tray_icon_path()
         if not path:
@@ -1702,6 +1712,9 @@ class MainWindow(QMainWindow):
         except Exception:
             accent = QColor('#5288c1')
 
+        # Цвет плоскостей — по теме трея, а не по теме плеера: у человека
+        # может стоять светлая тема Windows при тёмной теме программы.
+        glyph = QColor(icons.tray_glyph_color())
         icon = QIcon()
         for size in (16, 20, 24, 32, 48, 64):
             img = source.scaled(
@@ -1710,8 +1723,43 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation).convertToFormat(
                     QImage.Format.Format_ARGB32)
             img = self._replace_key_color(img, accent)
+            img = self._retint_planes(img, glyph)
             icon.addPixmap(QPixmap.fromImage(img))
         return icon
+
+    @staticmethod
+    def _retint_planes(img, glyph):
+        """Перекрашивает белые плоскости самолётика в цвет трея.
+
+        Яркость сохраняем: у значка плоскости не одного оттенка — верхняя
+        светлее, боковые чуть темнее. Если залить всё одним цветом,
+        самолётик станет плоским пятном и потеряет объём. Поэтому каждой
+        точке достаётся тот же цвет, осветлённый или затемнённый на
+        столько же, на сколько её яркость отличалась от базовой.
+
+        Цветные точки (акцент в середине) пропускаем: у них заметный
+        разброс между каналами, а у плоскостей он почти нулевой.
+        Прозрачность краёв остаётся прежней — иначе сглаживание по краю
+        превратилось бы в ступеньки.
+        """
+        w, h = img.width(), img.height()
+        base = max(1, glyph.red() + glyph.green() + glyph.blue())
+        for y in range(h):
+            for x in range(w):
+                c = img.pixelColor(x, y)
+                a = c.alpha()
+                if a < 8:
+                    continue
+                r, g, b = c.red(), c.green(), c.blue()
+                if max(r, g, b) - min(r, g, b) > 60:
+                    continue
+                k = ((r + g + b) / 3.0) / 250.0
+                img.setPixelColor(x, y, QColor(
+                    min(255, int(glyph.red() * k)),
+                    min(255, int(glyph.green() * k)),
+                    min(255, int(glyph.blue() * k)),
+                    a))
+        return img
 
     @staticmethod
     def _replace_key_color(img, accent):
@@ -1944,12 +1992,32 @@ class MainWindow(QMainWindow):
         tray.activated.connect(self._on_tray_activated)
         tray.show()
         self.tray = tray
+        self._tray_panel_was_light = icons.system_uses_light_panel()
+        print(f"[Трей] панель Windows: "
+              f"{'светлая' if self._tray_panel_was_light else 'тёмная'}")
         # Диагностика: видно, дошёл ли значок до оболочки. isVisible()
         # остаётся True даже когда Windows значок не показала, поэтому
         # дополнительно смотрим, есть ли у него место на экране.
         print(f"[Трей] показан: visible={tray.isVisible()}, "
               f"место={tray.geometry().x()}x{tray.geometry().y()}")
         QTimer.singleShot(1500, self._check_tray_alive)
+        # Тему Windows можно переключить при работающей программе — свет
+        # и тьму панели задач. Значок обязан перекраситься сразу, иначе
+        # он проживёт до перезапуска невидимым на новом фоне.
+        self._tray_theme = theme_watch = QTimer(self)
+        theme_watch.setInterval(TRAY_THEME_POLL_MS)
+        theme_watch.timeout.connect(self._poll_tray_theme)
+        theme_watch.start()
+
+    def _poll_tray_theme(self):
+        """Перекрашивает значок, если тема панели Windows сменилась."""
+        light = icons.system_uses_light_panel()
+        if light == self._tray_panel_was_light:
+            return
+        self._tray_panel_was_light = light
+        print(f"[Трей] тема панели сменилась: "
+              f"{'светлая' if light else 'тёмная'}")
+        self._update_tray_icon()
 
     def _check_tray_alive(self):
         """Проверяет через полторы секунды, что значок в трее жив.
