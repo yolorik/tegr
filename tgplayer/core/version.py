@@ -27,7 +27,7 @@
 
 MAJOR = 3
 MINOR = 0
-PATCH = 1
+PATCH = 2
 LOADER = 'd'
 
 VERSION = f"{MAJOR}.{MINOR}.{PATCH}{LOADER}"
@@ -76,3 +76,4 @@ def about_text():
         "Сделано с помощью ИИ (DeepSeek 4.1 Flash).",
         "Telegram-клиент: Telethon. Видеодвижок: libmpv.",
     )
+
