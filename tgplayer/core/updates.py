@@ -31,7 +31,11 @@ import urllib.request
 from . import version
 
 # Адрес репозитория. Меняется здесь и только здесь.
-REPO = 'yolorik/tgplayer_inst'
+#
+# Благодаря этой строке и текущему имени программы адрес совпадал с
+# репозиторием: yolorik/tgplayer. Переименовывать репозиторий не нужно —
+# имя репозитория и имя программы независимы.
+REPO = 'yolorik/tgplayer'
 API_LATEST = f'https://api.github.com/repos/{REPO}/releases'
 RELEASES_PAGE = f'https://github.com/{REPO}/releases'
 
@@ -39,9 +43,8 @@ RELEASES_PAGE = f'https://github.com/{REPO}/releases'
 #
 # Список, а не одно имя: программа искала установщик под именем
 # «TGPlayer_Setup.exe», а после переименования в Tegr он стал
-# «Tegr_Setup.exe». Старые сборки, которые ещё у людей, ищут прежнее имя —
-# им надо находить новый файл, иначе обновление молча ломается. Поэтому
-# берём любой из списка: порядок — «сначала новое имя».
+# «Tegr_Setup.exe». Старые релизы в репозитории остались со старым именем
+# файла, поэтому оба принимаются: так проверка не спотыкается о них.
 SETUP_ASSETS = ('Tegr_Setup.exe', 'TGPlayer_Setup.exe')
 HASH_ASSET = 'SHA256.txt'
 
