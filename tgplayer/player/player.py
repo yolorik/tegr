@@ -1425,6 +1425,9 @@ class PlayerWindow(QMainWindow):
         """
         self.bar_timer.stop()
         self.bar.hide()
+        # В раскладке окна панель прижата к нижнему и боковым краям:
+        # скруглённые углы оставляли бы в них просветы до кадра.
+        self.bar.set_rounded(False)
         self.bar.setMinimumWidth(0)
         self.bar.setMaximumWidth(16777215)
         self.bar.setAttribute(
@@ -1489,6 +1492,11 @@ class PlayerWindow(QMainWindow):
             sg = self.fs_window.screen().geometry()
             w = min(760, sg.width() - 60)
             self.bar.setFixedWidth(w)
+            # Здесь панель — отдельное окно, висящее над кадром с полями:
+            # скругление уместно и показывает, что она ни к чему не
+            # прикреплена. В оконном режиме его снимает
+            # _restore_bar_to_layout.
+            self.bar.set_rounded(True)
             self.bar.adjustSize()
             self.bar.move(sg.x() + (sg.width() - w) // 2, sg.y() + sg.height() - self.bar.height() - 36)
             self.bar.show()
