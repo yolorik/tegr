@@ -2311,24 +2311,79 @@ class MainWindow(QMainWindow):
         self.update_banner.show_ready()
 
     def _launch_installer(self, path):
-        """Запускает установщик и закрывает плеер.
+        """Запускает установку в тихом режиме и закрывает плеер.
 
         Установщик не может перезаписать работающий .exe — файл занят, —
-        поэтому сначала заказываем закрытие программы, а установщик
-        запускаем так, чтобы он подождал две секунды. Без этого он
-        начинал копировать сразу и падал на заблокированном файле.
+        поэтому сначала заказываем закрытие программы, а установщику
+        передаём /CLOSEAPPLICATIONS: он сам дождётся, пока файл
+        освободится, вместо того чтобы падать на заблокированном.
+
+        /VERYSILENT вместо /SILENT — окна установщика нет вовсе.
+        /SUPPRESSMSGBOXES и /NORESTART — чтобы тихий режим остался тихим:
+        без них установщик мог показать окно «закройте программу» или
+        окно «перезагрузите компьютер».
+
+        Спрашивается только UAC: установщику нужны права администратора,
+        и обойти это окно нельзя.
+
+        Ярлыки не трогаем: в тихом режиме Inno Setup пересоздаёт только
+        те, что записаны в [Icons] и не отмечены задачей. На рабочем
+        столе ярлык появляется по задаче desktopicon, а она при
+        обновлении не выбрана — поэтому лишнего значка не будет.
+
+        Запуск идёт через ShellExecute с глаголом runas. Обычный
+        subprocess.Popen в этой ситуации уже подводил: без повышения прав
+        установщик молча закрывался, не создав даже временную папку, и по
+        журналу было непонятно, что произошло.
         """
         try:
-            subprocess.Popen([path, '/SILENT', '/SUPPRESSMSGBOXES',
-                              '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'])
+            params = ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART '
+                      '/CLOSEAPPLICATIONS')
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, 'runas', path, params, None, 1)
+            # ShellExecuteW возвращает код больше 32 при успехе. Если
+            # человек нажал «Нет» в UAC, приходит 5 (ERROR_ACCESS_DENIED) —
+            # это не сбой, и незачем пугать его красной ошибкой.
+            if result <= 32:
+                if result == 5:
+                    print("[Обновление] установка отменена в окне UAC")
+                    self.update_banner.show_ready()
+                    self.set_status('Установка отменена: нужны права '
+                                    'администратора')
+                    return
+                raise OSError(f'ShellExecute вернул {result}')
         except Exception as ex:
             print(f"[Обновление] установщик не запустился: {ex}")
             self.update_banner.show_error(str(ex))
             return
         print("[Обновление] установщик запущен, закрываю плеер")
-        # Небольшая пауза: установщику нужно время, чтобы начать, а плееру
-        # — корректно закрыть соединение с Telegram.
-        QTimer.singleShot(300, QApplication.instance().quit)
+        # Закрываемся без вопросов и без сворачивания в трей: человек уже
+        # нажал «Перезапустить», и окно закрывается ради установки.
+        # После неё новый плеер запустит установщик.
+        self._really_quit = True
+        QTimer.singleShot(300, self._close_for_update)
+
+    def _close_for_update(self):
+        """Закрывает все окна перед установкой.
+
+        Одного self.close() мало: плеер — отдельное окно верхнего уровня,
+        и без явного закрытия он остался бы висеть с уже перезаписанным
+        файлом на диске, а выход затянулся бы до таймаута. Трей прячем
+        сами — иначе значок остаётся на панели до конца процесса.
+        """
+        pw = self.player_window
+        if pw is not None:
+            try:
+                pw.close()
+            except Exception:
+                pass
+            self.player_window = None
+        if self.tray is not None:
+            self.tray.hide()
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def open_settings(self):
         """Окно настроек: всё, что можно включить или выключить."""

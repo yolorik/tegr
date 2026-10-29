@@ -21,7 +21,7 @@
 ; (tgplayer/core/version.py): 2.7.0d, где буква — схема загрузчика.
 ; Сверяйте при сборке: установщик обёртывает уже собранный .exe, и если
 ; .exe пересобрали с новой версией, здесь её надо поднять руками.
-#define AppVersion "3.0.2"
+#define AppVersion "3.0.3"
 #define AppExe "TGPlayer.exe"
 #define SrcDir "H:\deepseek projects\tgplayer\dist\TGPlayer"
 
@@ -75,6 +75,9 @@ Name: "{group}\Удалить {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+; Обычная установка: галочка «Запустить TGPlayer» на последней странице.
+; В тихом режиме (обновление из самого плеера) этот пункт пропускается —
+; вместо него работает [Code].
 Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
     Flags: nowait postinstall skipifsilent
 
@@ -85,5 +88,74 @@ Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
 ; Журнал тоже не удаляем: по нему разбирают сбои, и он нужен уже после
 ; того, как программу сняли.
 Type: filesandordirs; Name: "{app}\stream_cache"
+
+[Code]
+var
+  RunAfterUpdate: Boolean;
+
+{ Запоминаем, что это обновление из плеера, ДО того как установщик начнёт
+  работу.
+
+  Порядок тут важен. Если спросить реестр в CurStepChanged при ssDone —
+  последнем шаге установки, — он ответит, что программа установлена, но
+  это уже будет запись от НОВОЙ версии, которую только что записали.
+  Разницы между первой установкой и обновлением тогда нет. А в
+  InitializeSetup реестр ещё хранит предыдущую версию: запись есть —
+  значит, обновляемся.
+
+  Тихий режим и есть признак обновления из плеера: обычный запуск
+  двойным щелчком тихим не бывает. Вручную установленный в тихом режиме
+  установщик тоже запустит плеер — это безвредно.
+
+  Готовой функции «программа установлена» в Inno Setup нет, поэтому
+  смотрим на файл удаления в папке программы: он появляется при первой
+  установке и перезаписывается при каждой следующей. }
+function InitializeSetup(): Boolean;
+var
+  UninstallKey: String;
+begin
+  // Обычно папка программы — {autopf}\TGPlayer, и проверки хватит одной.
+  // Но человек вправе поставить программу куда угодно, поэтому смотрим и
+  // в реестр. Скобки в имени раздела удваиваем: в Pascal Script они
+  // служебные, и без удвоения ключ выходит несуществующим.
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\'
+                  + '{{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}}_is1';
+  RunAfterUpdate := WizardSilent() and
+                    (FileExists(ExpandConstant('{autopf}\{#AppName}\unins000.exe'))
+                     or RegKeyExists(HKLM, UninstallKey));
+  Log('RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate))
+      + ' key=' + UninstallKey);
+  Result := True;
+end;
+
+{ Запуск плеера после обновления.
+
+  Делается здесь, а не через [Run] с флагом runasoriginaluser. При
+  повышении прав установщик создаёт для этого невидимый процесс-
+  посредник, который ждёт, пока установщик завершится, и только потом
+  запускает программу. Обычно это работает, но без обратной связи: если
+  посредник не сработал, со стороны это выглядит как «установилось и
+  молчит». Прямой запуск из установщика работает всегда, а запуск от
+  администратора плееру ничем не мешает: данные он хранит в профиле
+  пользователя, а не рядом с собой. }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ErrCode: Integer;
+  ExePath: String;
+begin
+  if CurStep <> ssDone then
+    Exit;
+  Log('ssDone: RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate)));
+  if not RunAfterUpdate then
+    Exit;
+  ExePath := ExpandConstant('{app}\{#AppExe}');
+  Log('Обновление из плеера: запускаю ' + ExePath);
+  if Exec(ExePath, '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait,
+          ErrCode) then
+    Log('Плеер запущен')
+  else
+    Log('Запуск не удался, код ' + IntToStr(ErrCode));
+end;
+
 
 
