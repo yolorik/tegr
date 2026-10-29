@@ -20,14 +20,31 @@ from ..core import paths, theme
 _ICON_CACHE = {}
 
 
+def icon_color():
+    """Цвет значков кнопок окна: цвет текста текущей темы.
+
+    Раньше он был жёстко светлым (#e8e8e8). На светлой теме такие
+    значки почти сливались с кнопками и выглядели пусто. Теперь цвет
+    берётся у палитры, и на светлой теме значки тёмные.
+    """
+    try:
+        return str(theme.theme().get('text') or '#e8e8e8')
+    except Exception:
+        return '#e8e8e8'
+
+
 def get_icon(kind):
-    if kind in _ICON_CACHE:
-        return _ICON_CACHE[kind]
-    pm = QPixmap(24, 24)
+    key = (kind, icon_color())
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = QPixmap(96, 96)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    color = QColor(232, 232, 232)
+    # Рисуем крупно и уменьшаем в QIcon: у тонких линий шестерёнки и
+    # обводок получаются ровные края вместо ступенек.
+    p.scale(4, 4)
+    color = QColor(icon_color())
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
     if kind == 'prev':
@@ -97,7 +114,40 @@ def get_icon(kind):
         p.drawLine(17, 7, 7, 17)
     p.end()
     icon = QIcon(pm)
-    _ICON_CACHE[kind] = icon
+    _ICON_CACHE[key] = icon
+    return icon
+
+
+def gear_icon(color=None):
+    """Шестерёнка заданного цвета — для кнопки настроек.
+
+    Отдельно от get_icon, потому что на кнопке она стоит в акцентном
+    цвете темы, а не в цвете текста: так сразу видно, что это действие,
+    а не ещё одна надпись в полосе.
+    """
+    c = QColor(color or icon_color())
+    key = ('gear', c.name())
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = QPixmap(72, 72)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    # Зубцы: восемь коротких линий по кругу.
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(c, 5.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    for i in range(8):
+        ang = math.radians(i * 45.0)
+        dx, dy = math.cos(ang), math.sin(ang)
+        p.drawLine(QPointF(36 + dx * 19, 36 + dy * 19),
+                   QPointF(36 + dx * 28, 36 + dy * 28))
+    # Тело шестерёнки и отверстие: два кольца.
+    p.setPen(QPen(c, 5.5))
+    p.drawEllipse(QRectF(16, 16, 40, 40))
+    p.drawEllipse(QRectF(28, 28, 16, 16))
+    p.end()
+    icon = QIcon(pm)
+    _ICON_CACHE[key] = icon
     return icon
 
 

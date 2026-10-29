@@ -27,7 +27,7 @@ VSVersionInfo(
            StringStruct(u'OriginalFilename', u'TGPlayer.exe'),
            StringStruct(u'ProductName', u'TG Player'),
            StringStruct(u'ProductVersion', u'2.5.0d'),
-           StringStruct(u'Comments', u'схема загрузчика d: возврат к исходной схеме после отката')])
+           StringStruct(u'Comments', u'схема загрузчика: d')])
       ]
     ),
     VarFileInfo([VarStruct(u'Translation', [1049, 1251])])

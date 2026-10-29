@@ -94,8 +94,14 @@ class PlayerWindow(QMainWindow):
         app_settings.restore_window_geometry(self, 'player_geometry', self._settings_dict())
 
         central = QWidget()
+        central.setObjectName("playerroot")
+        # У окна плеера фон чёрный, как у самого кадра: иначе по краям
+        # видео оставалась кайма цвета темы — на светлой теме она и
+        # выглядела белой обводкой вокруг видео.
+        central.setStyleSheet(
+            "#playerroot { background: #000000; border: none; }")
         self.root_layout = QVBoxLayout(central)
-        self.root_layout.setContentsMargins(4, 4, 4, 4)
+        self.root_layout.setContentsMargins(0, 0, 0, 0)
 
         self.container = widgets.PlayerContainer()
         self.bar = widgets.ControlBar()

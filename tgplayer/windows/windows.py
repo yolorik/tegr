@@ -30,13 +30,21 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QStatusBar, QSystemTrayIcon,
-    QVBoxLayout, QWidget, QWidgetAction)
+    QToolButton, QVBoxLayout, QWidget, QWidgetAction)
 
 from ..core import config, history, log, paths, proxy, theme, updates, utils, version
 from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
 from ..backend.backend import TelegramBackend
+
+# Доли верхней полосы: сколько ширины получают список папок и поиск.
+# Три к одному — примерно четверть окна под папку, остальное под поиск.
+# Обычный QComboBox сам просит ширину по самому длинному элементу, и без
+# ограничения доля уплывала к половине окна.
+TOPBAR_FOLDER_STRETCH = 1
+TOPBAR_SEARCH_STRETCH = 3
+
 
 class QrLoginDialog(QDialog):
     """Вход по QR-коду: телефон сканирует картинку с экрана.
@@ -725,7 +733,7 @@ class SettingsDialog(QDialog):
         win_lay.setContentsMargins(12, 8, 12, 12)
         win_lay.setSpacing(8)
         self.chk_tray = self._check(
-            win_lay, 'close_to_tray', 'Сворачивать в трей при закрытии',
+            win_lay, 'close_to_tray', 'Сворачивать в трей',
             values.get('close_to_tray'))
         self.chk_list = self._check(
             win_lay, 'playlist_panel', 'Показывать список роликов канала',
@@ -1418,22 +1426,13 @@ class MainWindow(QMainWindow):
         self._really_quit = False
         self._tray_notice_shown = False
         self.tray = None
-        # Один и тот же пункт показывается и в меню окна, и в меню трея,
-        # чтобы галочки не разъезжались.
+        # Пункт с галочкой в меню значка в трее: включён — крестик
+        # сворачивает окно, выключен — закрывает программу.
         self.act_close_to_tray = QAction(
-            'Сворачивать в трей при закрытии', self)
+            'Сворачивать в трей', self)
         self.act_close_to_tray.setCheckable(True)
         self.act_close_to_tray.setChecked(self._close_to_tray)
         self.act_close_to_tray.toggled.connect(self._toggle_close_to_tray)
-
-        # Режим совместимости: на старых и встроенных видеокартах
-        # аппаратный декодер отдаёт чёрный кадр при живом звуке. Плеер
-        # умеет включать его сам, но иногда проще задать заранее.
-        self.act_compat = QAction(
-            'Режим совместимости (старые видеокарты)', self)
-        self.act_compat.setCheckable(True)
-        self.act_compat.setChecked(bool(self._setting('compat')))
-        self.act_compat.toggled.connect(self._toggle_compat)
 
         # Тема оформления применяется сразу: её надо видеть в момент
         # переключения, а не после перезапуска.
@@ -1478,13 +1477,17 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(QLabel("Папка:"))
         self.folder_combo = QComboBox()
         self.folder_combo.currentIndexChanged.connect(self.on_folder_changed)
-        top_bar.addWidget(self.folder_combo, 1)
+        # Папка занимает небольшую долю полосы, а поиск — остальное.
+        # Раньше обе были с весом 1, и выпадающий список получал
+        # половину ширины окна: под названия папок это много, а поиску
+        # не хватало места.
+        top_bar.addWidget(self.folder_combo, TOPBAR_FOLDER_STRETCH)
 
         self.channel_search = QLineEdit()
         self.channel_search.setPlaceholderText(
             "Поиск: свои каналы и весь Telegram...")
         self.channel_search.textChanged.connect(self._on_channel_query)
-        top_bar.addWidget(self.channel_search, 1)
+        top_bar.addWidget(self.channel_search, TOPBAR_SEARCH_STRETCH)
 
         # Кнопок «Обновить» и «Войти» здесь больше нет.
         #
@@ -1494,21 +1497,18 @@ class MainWindow(QMainWindow):
         # показывался поверх плеера и его можно было случайно закрыть.
         # Теперь вход идёт ДО окна и есть вход по QR — кнопка не нужна.
 
-        # Меню окна: настройки и уход за кэшем.
-        self.btn_menu = QPushButton("⚙")
-        self.btn_menu.setToolTip("Настройки")
-        self.btn_menu.setFixedWidth(34)
-        win_menu = QMenu(self)
-        act_settings = win_menu.addAction("Настройки...")
-        act_settings.triggered.connect(self.open_settings)
-        win_menu.addSeparator()
-        win_menu.addAction(self.act_close_to_tray)
-        win_menu.addAction(self.act_compat)
-        win_menu.addSeparator()
-        act_clear = win_menu.addAction("Очистить кэш сейчас")
-        act_clear.triggered.connect(self.clear_cache)
-        self.btn_menu.setMenu(win_menu)
-        top_bar.addWidget(self.btn_menu)
+        # Настройки — просто кнопка с шестерёнкой. Выпадающего меню
+        # здесь больше нет: всё, что в нём было, переехало в окно
+        # настроек (режим совместимости и очистка кэша) или в меню
+        # значка в трее (сворачивание по крестику).
+        self.btn_settings = QToolButton()
+        self.btn_settings.setObjectName("settingbtn")
+        self.btn_settings.setToolTip("Настройки")
+        self.btn_settings.setIcon(icons.gear_icon())
+        self.btn_settings.setIconSize(QSize(18, 18))
+        self.btn_settings.setFixedSize(34, 30)
+        self.btn_settings.clicked.connect(self.open_settings)
+        top_bar.addWidget(self.btn_settings)
 
         main_lay.addLayout(top_bar)
 
@@ -1923,12 +1923,18 @@ class MainWindow(QMainWindow):
 
         # Переключатели переехали в окно настроек: в меню значка их было
         # неудобно искать, и не видно, что уже включено.
+        #
+        # Исключение — «Сворачивать в трей»: это про само окно, и искать
+        # его в настройках далеко. Пункт с галочкой: он же показывает,
+        # включено ли сейчас.
         menu = QMenu()
         act_show = menu.addAction('Показать окно')
         act_show.triggered.connect(self._show_from_tray)
         menu.addSeparator()
         act_settings = menu.addAction('Настройки...')
         act_settings.triggered.connect(self.open_settings)
+        menu.addSeparator()
+        menu.addAction(self.act_close_to_tray)
         menu.addSeparator()
         act_quit = menu.addAction('Выход')
         act_quit.triggered.connect(self._quit_app)
@@ -2014,7 +2020,12 @@ class MainWindow(QMainWindow):
                         else 'Крестик закрывает программу')
 
     def _toggle_compat(self, enabled):
-        """Запоминает режим совместимости и применяет его к открытому плееру."""
+        """Запоминает режим совместимости и применяет его к открытому плееру.
+
+        Порядок важен. Настройку пишем первыми: если режим меняется и у
+        уже открытого плеера, его toggle_compat сам обновит флаг, и при
+        следующей сборке плеер не начнёт с того же значения ещё раз.
+        """
         enabled = bool(enabled)
         try:
             self.backend.set_setting('compat', enabled)
@@ -2061,6 +2072,20 @@ class MainWindow(QMainWindow):
         # Значок трея собран из акцентного цвета — после смены темы его
         # надо пересобрать, иначе он останется в цветах прошлой темы.
         self._update_tray_icon()
+        # Кнопка настроек и значки панели плеера нарисованы кодом, цвет в
+        # стиле их не меняет: перекрашиваем вручную. Иначе после
+        # переключения на светлую тему светлые значки пропадали на
+        # светлых кнопках.
+        try:
+            self.btn_settings.setIcon(icons.gear_icon())
+        except Exception:
+            pass
+        pw = self.player_window
+        if pw is not None and not getattr(pw, '_closed', True):
+            try:
+                pw.bar.refresh_icons()
+            except Exception:
+                pass
 
     # --- Обновления -----------------------------------------------------
 
@@ -2337,12 +2362,15 @@ class MainWindow(QMainWindow):
         if key == 'theme':
             theme.set_theme_key(value)
             self._apply_theme()
-        elif key in ('compat', 'close_to_tray'):
-            # У этих пунктов есть галочка в меню окна, и она же —
-            # хранилище состояния. Щёлкаем её, а не дублируем логику.
-            act = (self.act_compat if key == 'compat'
-                   else self.act_close_to_tray)
-            act.setChecked(bool(value))
+        elif key == 'compat':
+            # Галочка в окне настроек не хранит состояние сама: она
+            # только сообщает о смене. Поэтому сначала применяем режим
+            # к открытому плееру, а потом запоминаем его в настройках.
+            self._toggle_compat(bool(value))
+            return
+        elif key == 'close_to_tray':
+            # Этот переключатель живёт в меню значка в трее.
+            self.act_close_to_tray.setChecked(bool(value))
             return
         elif key in ('hwdec', 'auto_quality', 'playlist_panel'):
             self._apply_to_player(key, value)

@@ -90,6 +90,18 @@ def _luminance(value):
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
 
 
+def is_light(key=None):
+    """Светлая ли тема. По этому признаку выбираем цвет подложки плеера.
+
+    Панель управления лежит поверх видео: на светлом фоне она должна быть
+    светлой, иначе подложка выглядела белой обводкой вокруг кадра.
+    """
+    try:
+        return _luminance(theme(key)['bg']) >= 0.5
+    except Exception:
+        return False
+
+
 def derive_palette(bg, accent):
     """Собирает полную палитру из двух цветов, выбранных пользователем.
 
@@ -253,6 +265,19 @@ def build_style(key=None):
     TG_DIVIDER = t['divider']
     TG_ERROR = t['error']
     TG_OK = t['ok']
+    # Цвет подложки панели управления. На светлой теме панель светлая,
+    # поэтому всё, что на ней нарисовано, должно быть тёмным. Иначе
+    # светлые значки (а они были всегда светлыми) пропадали на светлой
+    # подложке — «кнопок не видно».
+    light = is_light(key)
+    TG_BAR_BG = TG_BG if light else TG_BG_DEEP
+    TG_BAR_FG = TG_TEXT if light else '#ffffff'
+    TG_BAR_TRACK = (_rgba('#000000', 0.22) if light
+                    else _rgba('#ffffff', 0.22))
+    TG_BAR_HOVER = (_rgba('#000000', 0.10) if light
+                    else _rgba('#ffffff', 0.14))
+    TG_BAR_PRESS = (_rgba('#000000', 0.05) if light
+                    else _rgba('#ffffff', 0.07))
     return f"""
 * {{ font-family: 'Segoe UI', 'Noto Sans', sans-serif; }}
 QWidget {{ background: {TG_BG}; color: {TG_TEXT}; font-size: 13px; }}
@@ -281,16 +306,25 @@ QPushButton {{
     background: {TG_FIELD}; border: 1px solid transparent; border-radius: 8px;
     padding: 7px 16px;
 }}
-QPushButton:hover {{ background: #2b3a4d; }}
-QPushButton:pressed {{ background: #1e2836; }}
+QPushButton:hover {{ background: {TG_HOVER}; }}
+QPushButton:pressed {{ background: {TG_SELECT}; }}
 QPushButton:focus {{ border: 1px solid {TG_ACCENT}; }}
-QPushButton:disabled {{ color: {TG_TEXT_DIM}; background: #1c2733; }}
+QPushButton:disabled {{ color: {TG_TEXT_DIM}; background: {TG_FIELD}; }}
 QPushButton#primary {{
     background: {TG_ACCENT}; color: #ffffff; font-weight: 600;
 }}
 QPushButton#primary:hover {{ background: {TG_ACCENT_HI}; }}
 QPushButton#flat {{ background: transparent; color: {TG_LINK}; }}
 QPushButton#flat:hover {{ background: {TG_HOVER}; }}
+/* Кнопка настроек с шестерёнкой в верхней полосе: без подписи, поэтому
+   по размеру она квадратная и не тянется вместе с полосой. */
+QToolButton#settingbtn {{
+    background: {TG_FIELD}; border: 1px solid transparent;
+    border-radius: 8px; padding: 0px;
+}}
+QToolButton#settingbtn:hover {{ background: {TG_HOVER}; }}
+QToolButton#settingbtn:pressed {{ background: {TG_SELECT}; }}
+QToolButton#settingbtn::menu-indicator {{ image: none; width: 0px; }}
 
 QListWidget, QListView {{
     background: {TG_BG_DEEP}; border: none; border-radius: 10px;
@@ -378,13 +412,13 @@ QMessageBox {{ background: {TG_PANEL}; }}
    а с ним легко получить непрозрачную плашку в одном режиме и пустоту в
    другом. Здесь описано только то, что рисуют сами дочерние виджеты. */
 #controlbar QPushButton {{ background: transparent; border: none; border-radius: 8px; }}
-#controlbar QPushButton:hover {{ background: {_rgba('#ffffff', 0.14)}; }}
-#controlbar QPushButton:pressed {{ background: {_rgba('#ffffff', 0.07)}; }}
-#controlbar QLabel {{ color: {TG_TEXT}; font-size: 11px; }}
+#controlbar QPushButton:hover {{ background: {TG_BAR_HOVER}; }}
+#controlbar QPushButton:pressed {{ background: {TG_BAR_PRESS}; }}
+#controlbar QLabel {{ color: {TG_BAR_FG}; font-size: 11px; }}
 #controlbar QSlider {{ background: transparent; }}
-#controlbar QSlider::groove:horizontal {{ height: 4px; background: {_rgba('#ffffff', 0.22)}; border-radius: 2px; }}
+#controlbar QSlider::groove:horizontal {{ height: 4px; background: {TG_BAR_TRACK}; border-radius: 2px; }}
 #controlbar QSlider::sub-page:horizontal {{ background: {TG_ACCENT}; border-radius: 2px; }}
-#controlbar QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: #ffffff; }}
+#controlbar QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: {TG_BAR_FG}; }}
 #controlbar QSlider::handle:horizontal:hover {{ background: {TG_ACCENT_HI}; }}
 
 /* Переключатель автоспроизведения: пилюля рисует себя сама, поэтому

@@ -388,6 +388,11 @@ class ControlBar(QWidget):
         self.btn_pip.setIcon(icons.get_icon('pip'))
         self.btn_fs.setIcon(icons.get_icon('fs'))
         self.btn_list.setIcon(icons.get_icon('list'))
+        # Значки панели перекрашиваются вслед за темой: на светлой теме
+        # они тёмные, иначе на светлой подложке их не было видно.
+        self._playing = False
+        self._muted = False
+        self.refresh_icons()
 
         self.btn_pip.setToolTip("Картинка в картинке (I)")
         self.btn_list.setToolTip("Список канала (L)")
@@ -427,6 +432,27 @@ class ControlBar(QWidget):
         row2.addWidget(self.btn_fs)
         outer.addLayout(row2)
 
+    def refresh_icons(self, playing=None):
+        """Перерисовывает значки панели под текущую тему.
+
+        Вызывается и при сборке панели, и при смене темы: значок берётся
+        из кэша по цвету текста темы, поэтому после переключения на
+        светлую они должны стать тёмными, а не остаться светлыми.
+        """
+        self._playing = (bool(playing) if playing is not None
+                         else bool(getattr(self, '_playing', False)))
+        self.btn_prev.setIcon(icons.get_icon('prev'))
+        self.btn_rew.setIcon(icons.get_icon('rew'))
+        self.btn_play.setIcon(icons.get_icon('pause' if self._playing
+                                             else 'play'))
+        self.btn_ff.setIcon(icons.get_icon('ff'))
+        self.btn_next.setIcon(icons.get_icon('next'))
+        self.btn_mute.setIcon(icons.get_icon(
+            'mute' if getattr(self, '_muted', False) else 'vol'))
+        self.btn_pip.setIcon(icons.get_icon('pip'))
+        self.btn_fs.setIcon(icons.get_icon('fs'))
+        self.btn_list.setIcon(icons.get_icon('list'))
+
     def paintEvent(self, event):
         """Полупрозрачная подложка под панелью.
 
@@ -438,15 +464,25 @@ class ControlBar(QWidget):
 
         Цвет берётся у темы, доля непрозрачности — config.PANEL_BG_ALPHA. Кадр
         сквозь подложку виден, но надписи и ползунки остаются разборчивы.
+
+        На светлой теме подложка светлая: раньше она всегда была тёмной, и
+        на белом фоне получалась чёрная плашка поперёк кадра. Вместе с
+        тёмными значками это и дало «белую обводку вокруг видео», о
+        которой говорили.
         """
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
+        light = False
         try:
-            base = QColor(theme.theme()['bg_deep'])
+            light = theme.is_light()
+            base = QColor(theme.theme()['bg'] if light
+                          else theme.theme()['bg_deep'])
         except Exception:
             base = QColor('#0b0f14')
-        base.setAlphaF(config.PANEL_BG_ALPHA)
+        alpha = (config.PANEL_BG_ALPHA_LIGHT if light
+                 else config.PANEL_BG_ALPHA)
+        base.setAlphaF(alpha)
         p.setBrush(base)
         radius = 12
         # Скруглённый прямоугольник вписан в rect: QRectF(self.rect())
@@ -955,8 +991,15 @@ class PipBar(QWidget):
 class PlayerContainer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # У самого контейнера фон тоже чёрный и без рамки: по умолчанию
+        # QWidget берёт цвет темы, и на светлой теме вокруг кадра
+        # оставалась светлая кайма, читавшаяся как обводка видео.
+        self.setObjectName("playervideo")
+        self.setStyleSheet(
+            "QWidget#playervideo { background: #000000; border: none; }")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         self.video_widget = QWidget()
         self.video_widget.setStyleSheet("background: black;")
         self.video_widget.setAttribute(Qt.WidgetAttribute.WA_PaintOnScreen, True)
