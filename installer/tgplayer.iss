@@ -28,7 +28,7 @@
   #define AppName "Tegr"
 #endif
 #ifndef AppVersion
-  #define AppVersion "3.1.0"
+  #define AppVersion "3.2.1"
 #endif
 #ifndef AppExe
   #define AppExe "Tegr.exe"
@@ -43,18 +43,26 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppName}
-; Путь по умолчанию: Program Files для всех пользователей, когда установка
-; идёт с правами администратора. {autopf} при таком режиме раскрывается
-; именно туда — и теперь это работает, потому что права уже есть.
+; UsePreviousAppDir=no — ключ к переименованию папки.
 ;
-; Папка — старая, TGPlayer, хотя программа теперь называется Tegr. Так
-; обновление ложится поверх прежней установки и втягивает новое имя: без
-; этого в Program Files оказались бы две папки, старая с прошлой версией
-; и новая, а старая так и оставалась бы рядом. После первого же
-; обновления папка станет Tegr — она задаётся значением по умолчанию, и
-; при следующей установке уже выбрана новая.
-DefaultDirName={autopf}\TGPlayer
+; По умолчанию Inno Setup находит в реестре папку прошлой установки и
+; подставляет её вместо DefaultDirName. Из-за этого программа, которая
+; теперь называется Tegr, ставилась в прежнюю папку TGPlayer и выбраться
+; оттуда не могла: при каждом обновлении путь снова брался из реестра.
+;
+; С этим параметром папка берётся из DefaultDirName, то есть по имени
+; программы. Тех, кто ставил прежнюю версию, переносит MigratePreviousInstall
+; из раздела [Code].
+DefaultDirName={autopf}\{#AppName}
+UsePreviousAppDir=no
 DefaultGroupName={#AppName}
+; Страницу выбора группы не показываем: программа ставится для одного
+; человека, и лишний вопрос только сбивает.
+;
+; Заодно сбрасываем каталог группы от прошлой установки. Inno Setup
+; запоминает его в реестре и при каждом обновлении подставляет прежний:
+; после переименования ярлыки легли в папку «TGPlayer», хотя сами
+; назывались Tegr. Переопределяем группу явно, через DefaultGroupName.
 DisableProgramGroupPage=yes
 ; Права администратора запрашиваются всегда. Это главное изменение:
 ; установщик не пытается работать без прав и не перезапускается потом.
@@ -89,8 +97,10 @@ Source: "{#SrcDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{group}\Удалить {#AppName}"; Filename: "{uninstallexe}"
+; Ярлыки кладём в группу {#AppName} — по текущему имени программы.
+; Прежнюю папку «Пуск» убирает DeleteStaleShortcuts ниже.
+Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autoprograms}\{#AppName}\Удалить {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
@@ -109,13 +119,144 @@ Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; \
 Type: filesandordirs; Name: "{app}\stream_cache"
 
 [Code]
+{ Порядок объявлений в этом разделе обязателен: Pascal Script читает
+  сверху вниз и не понимает вызов процедуры, описанной ниже. Поэтому
+  сначала мелкие помощники, потом всё, что ими пользуется. }
+
 var
   RunAfterUpdate: Boolean;
+  OldDir: String;
 
-{ Запоминаем, что это обновление из плеера, ДО того как установщик начнёт
-  работу.
+const
+  { Прежнее имя программы. По нему ищутся папка прошлой установки и
+    ярлыки, оставшиеся от версий до переименования. }
+  LegacyName = 'TGPlayer';
 
-  Порядок тут важен. Если спросить реестр в CurStepChanged при ssDone —
+{ Папка, в которую программа ставилась в прошлый раз: её путь записан
+  в реестре вместе с версией. Не прочиталось — пустая строка, и
+  вызывающий подставит обычное место. }
+function GetPreviousAppDir(UninstallKey: String): String;
+begin
+  Result := '';
+  RegQueryStringValue(HKLM, UninstallKey, 'InstallLocation', Result);
+  if Result <> '' then
+    Result := RemoveBackslashUnlessRoot(Result);
+end;
+
+{ Копирует из прежней папки одну запись — файл или папку целиком.
+  Существующие файлы в новом месте не трогаем: там уже свежее. }
+procedure CopyPreviousEntry(FromPath, ToPath: String; Attributes: Cardinal);
+var
+  FindRec: TFindRec;
+begin
+  if (Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+  begin
+    ForceDirectories(ToPath);
+    if not FindFirst(FromPath + '\*', FindRec) then
+      Exit;
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+          CopyPreviousEntry(FromPath + '\' + FindRec.Name,
+                            ToPath + '\' + FindRec.Name, FindRec.Attributes);
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end
+  else
+    if not FileExists(ToPath) then
+      CopyFile(FromPath, ToPath, False);
+end;
+
+{ Переносит всё, что осталось в прежней папке. Деинсталлятор обычно уже
+  убрал своё; это подстраховка на случай, если он не отработал. }
+procedure CopyPreviousFiles(FromDir, ToDir: String);
+var
+  FindRec: TFindRec;
+begin
+  if not FindFirst(FromDir + '\*', FindRec) then
+    Exit;
+  try
+    repeat
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        CopyPreviousEntry(FromDir + '\' + FindRec.Name,
+                          ToDir + '\' + FindRec.Name, FindRec.Attributes);
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+{ Данные и кеш. Если программа стояла на другом диске, они лежат рядом с
+  .exe, а не в профиле пользователя — без этого шага переезд означал бы
+  потерю входа в аккаунт. В профиле данные не трогаем вовсе. }
+procedure CopyPreviousData(FromDir, ToDir: String);
+var
+  Names: TArrayOfString;
+  I: Integer;
+  Tail: String;
+begin
+  Names := ['my_player_session.session',
+            'my_player_session.session-journal',
+            'settings.json', 'history.json', 'proxy.txt'];
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Tail := Names[I];
+    if FileExists(FromDir + '\' + Tail) and
+       (not FileExists(ToDir + '\' + Tail)) then
+      CopyFile(FromDir + '\' + Tail, ToDir + '\' + Tail, False);
+  end;
+  if DirExists(FromDir + '\stream_cache') then
+    CopyPreviousEntry(FromDir + '\stream_cache', ToDir + '\stream_cache',
+                      FILE_ATTRIBUTE_DIRECTORY);
+end;
+
+{ Перенос прежней установки в папку с новым именем.
+
+  Раньше программа называлась TGPlayer и ставилась в свою папку. Если
+  оставить всё как есть, в Program Files окажутся две копии: старая со
+  старой версией внутри и новая рядом. Поэтому сначала снимаем прежнюю
+  установку, а её содержимое переносим в новую папку: так заводятся
+  установки, иначе список программ показывал бы одну, а файлов было бы
+  два набора.
+
+  Вызывается из InitializeSetup. Штатное место для такого переноса —
+  PrepareToInstall, но при установке с правами администратора Inno
+  Setup его не вызывает: проверено по журналу установки, там нет ни
+  одной его строки. А установщик у нас всегда с правами.
+
+  В InitializeSetup путь программы ещё не раскрыт через app, поэтому
+  берём его по тому же правилу, что в DefaultDirName.
+
+  Первую установку процедура пропускает: переносить нечего. }
+procedure MigratePreviousInstall;
+var
+  ResultCode: Integer;
+  Target: String;
+begin
+  Target := ExpandConstant('{autopf}\{#AppName}');
+  if (OldDir = '') or (CompareText(OldDir, Target) = 0) or
+     (not FileExists(OldDir + '\unins000.exe')) then
+    Exit;
+
+  Log('Переношу прежнюю установку из ' + OldDir + ' в ' + Target);
+  // Снимаем прежнюю установку её же деинсталлятором: он знает, что
+  // создавал сам, и не тронет чужие файлы.
+  if not Exec(OldDir + '\unins000.exe',
+              '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+              OldDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('Деинсталлятор прежней версии не запустился, код ' +
+        IntToStr(ResultCode));
+
+  CopyPreviousFiles(OldDir, Target);
+  CopyPreviousData(OldDir, Target);
+  Log('Перенос закончен');
+end;
+
+{ Запоминаем, что это обновление из плеера, и переносим прежнюю установку.
+
+  Порядок важен. Если спросить реестр в CurStepChanged при ssDone —
   последнем шаге установки, — он ответит, что программа установлена, но
   это уже будет запись от НОВОЙ версии, которую только что записали.
   Разницы между первой установкой и обновлением тогда нет. А в
@@ -124,39 +265,88 @@ var
 
   Тихий режим и есть признак обновления из плеера: обычный запуск
   двойным щелчком тихим не бывает. Вручную установленный в тихом режиме
-  установщик тоже запустит плеер — это безвредно.
-
-  Готовой функции «программа установлена» в Inno Setup нет, поэтому
-  смотрим на файл удаления в папке программы: он появляется при первой
-  установке и перезаписывается при каждой следующей. }
+  установщик тоже запустит плеер — это безвредно. }
 function InitializeSetup(): Boolean;
 var
   UninstallKey: String;
 begin
-  // Обычно папка программы — {autopf}\TGPlayer (у тех, кто ещё не
-  // обновился) или {autopf}\Tegr, но человек вправе поставить программу
-  // куда угодно, поэтому вдобавок смотрим в реестр. Скобки в имени
-  // раздела удваиваем: в Pascal Script они служебные, и без удвоения
-  // ключ выходит несуществующим.
+  // Скобки в имени раздела удваиваем: в Pascal Script они служебные, и
+  // без удвоения ключ выходит несуществующим.
   UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\'
                   + '{{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}}_is1';
+  OldDir := GetPreviousAppDir(UninstallKey);
+  if OldDir = '' then
+    OldDir := ExpandConstant('{autopf}\' + LegacyName);
   RunAfterUpdate := WizardSilent() and
-                    (FileExists(ExpandConstant('{autopf}\TGPlayer\unins000.exe'))
-                     or FileExists(ExpandConstant('{autopf}\Tegr\unins000.exe'))
+                    (FileExists(OldDir + '\unins000.exe')
                      or RegKeyExists(HKLM, UninstallKey));
   Log('RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate))
-      + ' key=' + UninstallKey);
+      + ', прежняя папка: ' + OldDir);
+
+  MigratePreviousInstall();
+
   Result := True;
 end;
 
-{ Запуск плеера после обновления.
+{ Убирает ярлыки прежнего имени.
 
-  Делается здесь, а не через [Run] с флагом runasoriginaluser. При
-  повышении прав установщик создаёт для этого невидимый процесс-
-  посредник, который ждёт, пока установщик завершится, и только потом
-  запускает программу. Обычно это работает, но без обратной связи: если
-  посредник не сработал, со стороны это выглядит как «установилось и
-  молчит». Прямой запуск из установщика работает всегда, а запуск от
+  Ярлыки идут по имени программы, поэтому от установки до
+  переименования в меню «Пуск» остались TGPlayer и «Удалить TGPlayer»,
+  а рядом появились новые. Две записи про одну программу путают. }
+procedure DeleteStaleShortcuts;
+var
+  Dir: String;
+  Name: String;
+begin
+  // Прежняя папка в «Пуск». Inno Setup подставлял её от прошлой
+  // установки, поэтому ярлыки с новыми именами оказывались внутри
+  // «TGPlayer». Убираем и файлы, и саму папку.
+  Dir := ExpandConstant('{autoprograms}\' + LegacyName);
+  if DirExists(Dir) then
+  begin
+    Name := Dir + '\' + LegacyName + '.lnk';
+    if FileExists(Name) then
+    begin
+      DeleteFile(Name);
+      Log('Убран прежний ярлык: ' + Name);
+    end;
+    Name := Dir + '\Удалить ' + LegacyName + '.lnk';
+    if FileExists(Name) then
+    begin
+      DeleteFile(Name);
+      Log('Убран прежний ярлык удаления: ' + Name);
+    end;
+    // Папка бывает не пустой: там могут остаться ярлыки с новыми
+    // именами, созданные предыдущей установкой. Переносим их в папку
+    // с текущим именем, а затем убираем старую.
+    Name := Dir + '\{#AppName}.lnk';
+    if FileExists(Name) then
+    begin
+      CopyFile(Name, ExpandConstant('{autoprograms}\{#AppName}\{#AppName}.lnk'),
+               False);
+      DeleteFile(Name);
+    end;
+    Name := Dir + '\Удалить {#AppName}.lnk';
+    if FileExists(Name) then
+    begin
+      CopyFile(Name, ExpandConstant(
+        '{autoprograms}\{#AppName}\Удалить {#AppName}.lnk'), False);
+      DeleteFile(Name);
+    end;
+    if RemoveDir(Dir) then
+      Log('Убрана прежняя папка в «Пуск»: ' + Dir);
+  end;
+end;
+
+{ Последний шаг установки: чистим прежние ярлыки и, если это было
+  обновление из плеера, запускаем новую версию.
+
+  Запуск делается здесь, а не через [Run] с флагом runasoriginaluser.
+  При повышении прав установщик создаёт для этого невидимый
+  процесс-посредник, который ждёт, пока установщик завершится, и только
+  потом запускает программу. Обычно это работает, но без обратной связи:
+  если посредник не сработал, со стороны это выглядит как «установилось
+  и молчит». Прямой запуск из установщика работает всегда, а запуск от
   администратора плееру ничем не мешает: данные он хранит в профиле
   пользователя, а не рядом с собой. }
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -167,6 +357,7 @@ begin
   if CurStep <> ssDone then
     Exit;
   Log('ssDone: RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate)));
+  DeleteStaleShortcuts();
   if not RunAfterUpdate then
     Exit;
   ExePath := ExpandConstant('{app}\{#AppExe}');
@@ -177,7 +368,3 @@ begin
   else
     Log('Запуск не удался, код ' + IntToStr(ErrCode));
 end;
-
-
-
-
