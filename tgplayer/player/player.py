@@ -14,6 +14,7 @@
 """
 import asyncio
 import ctypes
+import json
 import math
 import os
 import time
@@ -106,6 +107,7 @@ class _FsStrip(QWidget):
     def __init__(self, player):
         super().__init__(player.centralWidget())
         self._player = player
+        self._bar = player.bar
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -261,6 +263,10 @@ class PlayerWindow(QMainWindow):
         self.media = None
         self._one_window_fs = False
         self._windowed_geometry = None
+        # Растянута ли картинка на всё окно (полный экран) и набор
+        # свойств, с которым сейчас работает mpv.
+        self._fill_video = False
+        self._mpv_opts = {}
         # Полоса кнопок для полного экрана в одном окне: панель там
         # спрятана, а без кнопок не обойтись. Вне полного экрана скрыта.
         self._fs_strip = None
@@ -617,7 +623,31 @@ class PlayerWindow(QMainWindow):
         )
         if not qt:
             opts['wid'] = int(self.video_widget.winId())
+        self._mpv_opts = dict(opts)
         return mpv_boot.mpv.MPV(**opts)
+
+    def _set_mpv_option(self, name, value):
+        """Меняет свойство mpv на лету, без перезапуска ролика.
+
+        Простого «запиши свойство» мало: часть свойств mpv применяет
+        только к заново открытому файлу. Уведомление
+        `file-local-options` заставляет перечитать весь набор свойств
+        (тот, что был при создании mpv, плюс новое) и применить его к
+        текущему файлу — ролик при этом не перезапускается.
+        """
+        if not hasattr(self, '_mpv_opts'):
+            self._mpv_opts = {}
+        # 1) само свойство текущего файла;
+        self._mpv_opts[name] = value
+        try:
+            # Свойство само по себе применяется к текущему кадру — без
+            # этого пришлось бы перезапускать ролик. Уведомление о смене
+            # набора свойств file-local-options оставлено не по делу:
+            # здесь оно не работает (mpv отвечает ошибкой), и в консоль
+            # летели предупреждения при каждом входе/выходе.
+            self.player[name] = value
+        except Exception as ex:
+            print(f"[MPV] {name} не применилось: {ex}")
 
     def _sink_qt_video(self):
         """Ставит QVideoWidget на место виджета mpv (один раз)."""
@@ -1784,37 +1814,76 @@ class PlayerWindow(QMainWindow):
         """
         if self._one_window_fs:
             return
-        self._windowed_geometry = self.geometry()
+        # Флаг — ПЕРВЫМ делом: иначе в обработчик WindowStateChange
+        # успевает прийти старое состояние окна, и плеер принимает вход
+        # за выход из полного экрана.
         self._one_window_fs = True
+        self._windowed_geometry = self.geometry()
         self.bar.hide()
         self.bar_timer.stop()
+        # Пока окно меняет состояние, Qt может прислать промежуточное
+        # WindowStateChange (например, «обычное»), и обработчик принял бы
+        # его за выход из полного экрана — вход срывался со второго раза.
+        # Лишний флаг выхода на это время не даётся.
+        self._entering_fs = True
+        try:
+            self.setWindowState(
+                self.windowState() | Qt.WindowState.WindowFullScreen)
+            # Картинка — до краёв экрана (без чёрных полей), без
+            # перезапуска ролика.
+            self._set_fit_to_window(True)
+        finally:
+            self._entering_fs = False
         if self._fs_strip is None:
             self._fs_strip = _FsStrip(self)
         self._fs_strip.attach()
-        self.setWindowState(
-            self.windowState() | Qt.WindowState.WindowFullScreen)
-        if self._fs_strip is not None:
-            self._fs_strip.place()
+        self._fs_strip.place()
         self._mouse_watch.start()
         self.activateWindow()
         self.setFocus()
 
     def _exit_one_window_fullscreen(self):
-        """Возвращает окно плеера к прежнему размеру."""
+        """Возвращает окно плеера из полного экрана к обычному виду."""
         if not self._one_window_fs:
             return
         self._one_window_fs = False
-        self.bar_timer.stop()
-        self._mouse_watch.stop()
-        if self._fs_strip is not None:
-            self._fs_strip.detach()
-        self.setWindowState(
-            self.windowState() & ~Qt.WindowState.WindowFullScreen)
-        if self._windowed_geometry is not None:
-            self.setGeometry(self._windowed_geometry)
-        self.bar.show()
-        self.bar.set_rounded(False)
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._exiting_fs = True
+        try:
+            self.bar_timer.stop()
+            self._mouse_watch.stop()
+            if self._fs_strip is not None:
+                self._fs_strip.detach()
+            # Сначала снять полный экран, потом вернуть размер:
+            # setGeometry в стиле полного экрана Qt не применяет (и
+            # сыплет «Unable to set geometry»), а после снятия стиля
+            # окно возвращается к прежнему размеру само — проверено.
+            self.setWindowState(
+                self.windowState() & ~Qt.WindowState.WindowFullScreen)
+            self.bar.show()
+            self.bar.set_rounded(False)
+            self._set_fit_to_window(False)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        finally:
+            self._exiting_fs = False
+
+    def _set_fit_to_window(self, on):
+        """Растягивать ли кадр на всё окно (без чёрных полей).
+
+        В полном экране картинка должна идти до краёв экрана:
+        keepaspect=no растягивает её на всё окно, panscan обрезает то,
+        что вылезло за край. В оконном режиме возвращаются обычные
+        пропорции с полями.
+
+        Ролик НЕ перезапускаем: свойства ставим на лету (см.
+        _set_mpv_option) — так картинка не мигает и не сбивает порядок
+        событий окна.
+        """
+        on = bool(on)
+        if on == getattr(self, '_fill_video', False) and self._mpv_opts:
+            return
+        self._fill_video = on
+        self._set_mpv_option('keepaspect', 'no' if on else 'yes')
+        self._set_mpv_option('panscan', 1.0 if on else 0.0)
 
     def show_fullscreen_controls(self):
         """Показывает панель и курсор в полном экране и запускает таймер."""
@@ -2398,6 +2467,8 @@ class PlayerWindow(QMainWindow):
                 # его могут и средствами Windows (Win+стрелка). Тогда
                 # возвращаем панель на место, как при обычном выходе.
                 if (self._one_window_fs
+                        and not getattr(self, '_entering_fs', False)
+                        and not getattr(self, '_exiting_fs', False)
                         and not (self.windowState()
                                  & Qt.WindowState.WindowFullScreen)):
                     self._exit_one_window_fullscreen()
