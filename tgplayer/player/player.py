@@ -110,22 +110,36 @@ class _FsStrip(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(player.bar)
+        # Полоса НЕ занимает место в раскладке: она лежит поверх низа
+        # окна, и кадр от неё не меняет размер. Это и раньше решило бы
+        # «кадр прыгает», а заодно сохраняет пропорции видео.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.hide()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide_strip)
 
     def attach(self):
-        """Ставит полосу в раскладку окна под кадром."""
-        if self._player.root_layout.indexOf(self) < 0:
-            self._player.root_layout.addWidget(self)
+        """Прикрепляет полосу к низу окна — поверх, не в раскладке."""
+        host = self._player.centralWidget()
+        self.setParent(host)
+        self.place()
         self.show()
         self.show_strip()
+        self.raise_()
+
+    def place(self):
+        """Ставит полосу по низу окна во всю ширину, поверх кадра."""
+        host = self.parentWidget()
+        if host is None:
+            return
+        height = max(self._bar.sizeHint().height(), self.sizeHint().height())
+        self.setGeometry(0, max(0, host.height() - height),
+                         host.width(), height)
 
     def detach(self):
         """Убирает полосу и возвращает кнопки в раскладку окна."""
         self._timer.stop()
-        self._player.root_layout.removeWidget(self)
         self.hide()
         self._player._restore_bar_to_layout()
 
@@ -133,14 +147,20 @@ class _FsStrip(QWidget):
         """Показывает полосу и продлевает ей жизнь (как панель)."""
         if not self._player.is_fullscreen_one_window():
             return
+        self.place()
         if not self.isVisible():
             self.show()
+        self.raise_()
         try:
             paused = bool(self._player.player.pause)
         except Exception:
             paused = False
         if not paused:
             self._timer.start(config.BAR_HIDE_MS)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.place()
 
     def hide_strip(self):
         """Прячет полосу по бездействию."""
@@ -153,7 +173,8 @@ class _FsStrip(QWidget):
             pass
         self._timer.stop()
         self.hide()
-        self._player.setCursor(Qt.CursorShape.BlankCursor)
+        # Курсор не прячем: в полном экране он должен быть виден.
+        self._player.setCursor(Qt.CursorShape.ArrowCursor)
 
 
 class PlayerWindow(QMainWindow):
@@ -1772,6 +1793,8 @@ class PlayerWindow(QMainWindow):
         self._fs_strip.attach()
         self.setWindowState(
             self.windowState() | Qt.WindowState.WindowFullScreen)
+        if self._fs_strip is not None:
+            self._fs_strip.place()
         self._mouse_watch.start()
         self.activateWindow()
         self.setFocus()
@@ -2461,11 +2484,13 @@ class PlayerWindow(QMainWindow):
         if not self._is_fullscreen_view():
             return
         self.bar_timer.stop()
-        if self.bar.isVisible():
+        if self.bar.isVisible() and not self._one_window_fs:
             self.bar.hide()
-        target = (self if self.is_fullscreen_one_window()
-                  else self.fs_window)
-        target.setCursor(Qt.CursorShape.BlankCursor)
+        if self._one_window_fs:
+            if self._fs_strip is not None:
+                self._fs_strip.hide_strip()
+            return
+        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
 
     def _cursor_over_bar(self):
         """Курсор сейчас над панелью управления.
@@ -2512,9 +2537,7 @@ class PlayerWindow(QMainWindow):
             self.bar_timer.start(config.BAR_HIDE_MS)
             return
         self.bar.hide()
-        target = (self if self.is_fullscreen_one_window()
-                  else self.fs_window)
-        target.setCursor(Qt.CursorShape.BlankCursor)
+        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
 
     def _playlist_resize_event(self, event):
         """Перетаскивание левого края панели списка: меняет её ширину.
