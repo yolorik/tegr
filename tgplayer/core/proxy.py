@@ -311,6 +311,28 @@ def proxy_port_alive(port, host='127.0.0.1', timeout=0.5):
             pass
 
 
+def system_proxy_raw():
+    """Что прописано в Windows как прокси — даже если никуда не идёт.
+
+    Одна строка для сообщений об ошибках: по ней понятно, включён ли
+    системный прокси и какой адрес в нём стоит.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return ''
+    path = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            enabled, _ = winreg.QueryValueEx(key, 'ProxyEnable')
+            server, _ = winreg.QueryValueEx(key, 'ProxyServer')
+    except OSError:
+        return ''
+    if not enabled:
+        return ''
+    return str(server or '')
+
+
 def system_proxy_modes():
     """Прокси, который VPN-клиент прописал в настройки Windows.
 

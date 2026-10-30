@@ -263,6 +263,38 @@ class TelegramBackend(QObject):
                 return found[0]
         return 'direct'
 
+    def _proxy_failure_hint(self):
+        """Почему в режиме системного прокси не вышло и что сделать.
+
+        Проверки дают три равные картины отказа, и у каждой своё лечение:
+
+        * в настройках Windows нет адреса прокси — его не включил
+          VPN-клиент, а в режиме «системный прокси» идём только туда;
+        * адрес есть и порт открыт, но прокси не пропускает до Telegram —
+          чаще всего это выключенный VPN или заблокированный дата-центр;
+        * прокси требует логин и пароль, а в proxy.txt их нет.
+
+        Возвращает готовое сообщение или '' если сказать нечего.
+        """
+        try:
+            servers = proxy.system_proxy_modes()
+            raw = proxy.system_proxy_raw()
+        except Exception:
+            return ''
+        if not raw:
+            return ("В Windows прокси не включён (или не указан адрес). "
+                    "Включите системный прокси в VPN-клиенте либо "
+                    "выберите другой способ подключения.")
+        if not servers:
+            return ("Прокси (%s) прописан в Windows, но не отвечает — "
+                    "VPN-клиент выключен?" % raw)
+        # Адрес есть и прокси отвечает, но подключиться через него не
+        # вышло. Две частые причины: VPN не пускает (сервер Telegram
+        # закрыт) или прокси требует логин и пароль, а их нет в proxy.txt.
+        return ("Прокси (%s) отвечает, но до Telegram через него не "
+                "пройти. Проверьте, что VPN включён; если у прокси есть "
+                "логин и пароль — укажите их в proxy.txt." % raw)
+
     @staticmethod
     def _build_client(mode, mtproxy=None):
         """Создаёт клиент Telethon для выбранного способа подключения.
@@ -1207,6 +1239,10 @@ class TelegramBackend(QObject):
             # Резервные способы проверяем по разу: их задача быстро
             # выяснить, есть ли дорога, а не удержать связь.
             if mode.startswith('proxy:'):
+                # Локальный прокси пробуем ещё раз, но только с новым
+                # соединением: без этого единственная попытка уходила на
+                # разогрев недавно поднятого VPN-клиента, и режим
+                # «системный прокси» выглядел нерабочим.
                 tries = 1
             else:
                 tries = 3 if mode == preferred else 1
@@ -1228,6 +1264,22 @@ class TelegramBackend(QObject):
                         # по таймауту. Проверку поколения внутри connect()
                         # сделать нечем — Telethon не умеет отменять
                         # отдельную попытку, поэтому после неё сверяемся.
+                        #
+                        # Прямо перед подключением ВНОВЬ читаем логин и
+                        # пароль из proxy.txt: раньше они читались только
+                        # при старте, и вписанные в файл на работающей
+                        # программе не подхватывались — прокси с
+                        # авторизацией так и отвечал отказом.
+                        try:
+                            proxy.load_proxy_config()
+                            if mode.startswith('proxy:'):
+                                self.client = self._build_client(
+                                    mode, self._mtproxy)
+                        except Exception as ex:
+                            print(f"[Бэкенд] логин/пароль прокси: {ex}")
+                        if self.client is None:
+                            print(f"[Бэкенд] Способ недоступен: {label}")
+                            break
                         await asyncio.wait_for(self.client.connect(),
                                                timeout=config.CONNECT_TIMEOUT)
                     if self._connect_stale(gen):
@@ -1278,8 +1330,13 @@ class TelegramBackend(QObject):
                         last_error = None
                         break
                     last_error = ex
+                    # У ожидания пишется «истекло время ожидания» —
+                    # без этого в журнале оставалась пустая строка и
+                    # понять, почему режим не подключился, было нечем.
+                    reason = (repr(ex) if not str(ex)
+                              else f"{type(ex).__name__}: {ex}")
                     print(f"[Бэкенд] Ошибка ({label}), "
-                          f"попытка {attempt}/{tries}: {ex}")
+                          f"попытка {attempt}/{tries}: {reason}")
                     # Битая сессия: файл есть, но открыть его нельзя.
                     # Без этого плеер навсегда застревал на ошибке, и
                     # вылечить это можно было только удалением файла
@@ -1312,9 +1369,17 @@ class TelegramBackend(QObject):
                         await asyncio.sleep(1.5 * attempt)
 
         if last_error and notify:
+            # В режиме «системный прокси» общая фраза «проверьте VPN»
+            # ничего не объясняет: причин три, и лечение у каждой своё.
+            # Подсказка называет ту, что видна по настройкам Windows.
+            hint = ''
+            if self._proxy_mode == 'system':
+                hint = self._proxy_failure_hint()
             self.error_occurred.emit(
                 "Не удалось подключиться: " + _error_text(last_error)
-                + ". Проверьте VPN или прокси.")
+                + (". " + hint if hint else ". Проверьте VPN или прокси."))
+            if hint:
+                self.status_changed.emit(hint)
         return False
 
     async def reload_folders(self):
