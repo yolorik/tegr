@@ -752,6 +752,10 @@ class SettingsDialog(QDialog):
         self.chk_list = self._check(
             win_lay, 'playlist_panel', 'Показывать список роликов канала',
             values.get('playlist_panel'))
+        self.chk_osd_below = self._check(
+            win_lay, 'osd_below_bar',
+            'Подсказки (громкость, перемотка) под панелью управления',
+            values.get('osd_below_bar'))
         body.addWidget(win)
 
         # --- Кэш ---
@@ -2570,6 +2574,11 @@ class MainWindow(QMainWindow):
             elif key == 'playlist_panel':
                 if bool(getattr(pw, '_playlist_shown', False)) != bool(value):
                     pw._toggle_playlist()
+            elif key == 'osd_below_bar':
+                # Подсказка, если сейчас видна, переезжает на новое место.
+                if (getattr(pw, '_osd_window', None) is not None
+                        and pw._osd_window.isVisible()):
+                    pw._place_window_osd()
         except Exception:
             pass
 

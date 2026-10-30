@@ -167,8 +167,13 @@ class PlayerWindow(QMainWindow):
         # окно» держим полным экраном в этом же окне.
         self.use_qt_video = False
         self._video_mode = 'mpv'
+        # Подсказки: таймер, окно и надпись создаются при первой
+        # подсказке (_ensure_osd_window), но таймер — всегда.
         self._osd_label = None
-        self._osd_timer = None
+        self._osd_window = None
+        self._osd_timer = QTimer(self)
+        self._osd_timer.setSingleShot(True)
+        self._osd_timer.timeout.connect(self._hide_window_osd)
         self.video_out = None
         self.media = None
         self._one_window_fs = False
@@ -1514,61 +1519,92 @@ class PlayerWindow(QMainWindow):
         self._show_window_osd(text, timeout_ms)
 
     def _show_window_osd(self, text, timeout_ms=1200):
-        """Подсказка поверх кадра — обычная надпись в окне плеера."""
+        """Подсказка поверх кадра — прозрачным окном, над панелью.
+
+        Почему окном, а не надписью в окне плеера: кадр в полном экране
+        рисует mpv, и обычный виджет лежит ПОД его слоем, а панель висит
+        отдельным окном поверх всего. Поэтому любая надпись внутри кадра
+        в нижней полосе оказывается под панелью — что её ни двигай.
+        Своё прозрачное окно поверх кадра решает это так же, как с самой
+        панелью и справкой по клавишам.
+        """
         try:
-            if self._osd_label is None:
-                label = QLabel(self.container)
-                label.setObjectName('osdtext')
-                label.setAttribute(
-                    Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                label.setAttribute(
-                    Qt.WidgetAttribute.WA_NoSystemBackground, True)
-                label.setStyleSheet(
-                    '#osdtext { background: rgba(10, 12, 16, 0.72);'
-                    ' color: #eef2f6; border-radius: 10px;'
-                    ' padding: 8px 16px; font-size: 16px; }')
-                self._osd_label = label
-                self._osd_timer = QTimer(self)
-                self._osd_timer.setSingleShot(True)
-                self._osd_timer.timeout.connect(self._hide_window_osd)
+            self._ensure_osd_window()
+            win = self._osd_window
             self._osd_label.setText(text)
             self._osd_label.adjustSize()
-            self._place_window_osd()
-            self._osd_label.show()
-            self._osd_label.raise_()
+            win.adjustSize()
+            self._place_window_osd(size=win.size())
+            win.show()
+            win.raise_()
             self._osd_timer.start(max(300, int(timeout_ms)))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[OSD] не показалось: {ex}")
 
-    def _place_window_osd(self):
-        """Ставит подсказку над панелью управления.
-
-        Если отсчитывать от нижнего края кадра, подсказка оказывается
-        ровно там, где в полном экране висит панель-окно, и панель её
-        перекрывает. Панель — отдельное окно поверх кадра, поэтому её
-        высоту надо учесть: считаем, насколько она заходит на кадр, и
-        поднимаем надпись над ней.
-        """
-        label = self._osd_label
-        host = self.container
-        if label is None or host is None:
+    def _ensure_osd_window(self):
+        """Создаёт окно подсказки один раз: прозрачное, без фокуса."""
+        if self._osd_window is not None:
             return
-        bottom = 24
+        win = QWidget(None, Qt.WindowType.FramelessWindowHint
+                      | Qt.WindowType.WindowStaysOnTopHint
+                      | Qt.WindowType.Tool)
+        win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        win.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        win.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        win.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay = QVBoxLayout(win)
+        lay.setContentsMargins(0, 0, 0, 0)
+        label = QLabel('')
+        label.setObjectName('osdtext')
+        label.setStyleSheet(
+            '#osdtext { background: rgba(10, 12, 16, 0.82);'
+            ' color: #eef2f6; border-radius: 10px;'
+            ' padding: 8px 16px; font-size: 16px; }')
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(label)
+        self._osd_window = win
+        self._osd_label = label
+
+    def _place_window_osd(self, size=None):
+        """Ставит подсказку по центру — над панелью или под ней.
+
+        По умолчанию над панелью: она ходит по вертикали, и подсказка в
+        самом низу могла бы не поместиться. «Под панелью» — у самого
+        низа экрана, это настройка.
+        """
+        win = self._osd_window
+        if win is None:
+            return
+        size = size or win.size()
         try:
-            if self.bar.isVisible() and self._bar_in_window:
-                bar_bottom = self.bar.mapToGlobal(
-                    QPoint(0, self.bar.height())).y()
-                host_bottom = host.mapToGlobal(QPoint(0, host.height())).y()
-                coverage = max(0, host_bottom - bar_bottom)
-                bottom = coverage + 12
+            host = self.container
+            rect = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
         except Exception:
-            pass
-        label.move(max(0, (host.width() - label.width()) // 2),
-                   max(0, host.height() - label.height() - bottom))
+            rect = self.screen().geometry()
+        x = rect.x() + (rect.width() - size.width()) // 2
+        if self._osd_below_bar():
+            y = rect.y() + rect.height() - size.height() - 8
+        else:
+            top = rect.y() + rect.height() - size.height() - 24
+            if self.bar.isVisible() and self._bar_in_window:
+                bar_top = self.bar.mapToGlobal(QPoint(0, 0)).y()
+                if top + size.height() > bar_top - 6:
+                    top = bar_top - size.height() - 8
+            y = max(rect.y() + 8, top)
+        win.move(x, y)
+
+    def _osd_below_bar(self):
+        """Включена ли настройка «подсказки под панелью управления»."""
+        try:
+            return bool(self._setting('osd_below_bar', False))
+        except Exception:
+            return False
 
     def _hide_window_osd(self):
-        if self._osd_label is not None:
-            self._osd_label.hide()
+        if self._osd_window is not None:
+            self._osd_window.hide()
 
     def _video_title(self, index):
         try:
@@ -2271,6 +2307,12 @@ class PlayerWindow(QMainWindow):
             if self._bar_in_window:
                 self.bar.setGeometry(self._bar_window_rect())
             self.bar.show()
+        elif self._bar_in_window:
+            # Панель ходит по вертикали как плавающее окно: подсказка,
+            # если висела над ней, переставляется над новой позицией.
+            if (self._osd_window is not None
+                    and self._osd_window.isVisible()):
+                self._place_window_osd()
         # Курсор в полном экране виден — возвращаем стрелку.
         self.setCursor(Qt.CursorShape.ArrowCursor)
         if self.bar.isWindow():
