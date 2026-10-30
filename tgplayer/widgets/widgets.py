@@ -1054,11 +1054,14 @@ class MouseWatch(QObject):
     от «панель всплыла под неподвижным курсором».
     """
 
-    def __init__(self, window, on_over, on_leave):
+    def __init__(self, window, on_over, on_leave, on_move=None):
         super().__init__(window)
         self._window = window
         self._on_over = on_over
         self._on_leave = on_leave
+        # on_move — вызывать на КАЖДЫЙ шаг опроса, где курсор над окном:
+        # так окно узнаёт, что мышь сдвинулась, не полагаясь на события Qt.
+        self._on_move = on_move
         self._over = False
         self._inset = 0.0
         self._timer = QTimer(self)
@@ -1191,6 +1194,8 @@ class MouseWatch(QObject):
                 self._inset = time.monotonic()
             self._over = True
             self._on_over()
+            if self._on_move is not None:
+                self._on_move()
         elif self._over:
             # Ушла с окна: один раз сообщаем. Дальше ждём, пока вернётся.
             self._over = False

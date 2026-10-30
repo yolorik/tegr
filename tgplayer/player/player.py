@@ -20,7 +20,7 @@ import time
 from collections import deque
 
 from PyQt6.QtCore import (
-    QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer,
+    QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl,
     QCoreApplication, pyqtSignal)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QCursor, QKeySequence, QPainter, QPixmap,
@@ -34,9 +34,47 @@ from ..core import config, history, log, paths, theme, utils, version
 from ..core import settings as app_settings
 from ..icons import icons
 from ..system import mpv_boot
+
+# Кадры mpv рисует Qt: mpv отдаёт их через плагин QtMultimedia
+# (libmpv2/qt), а рисует обычный QVideoWidget. Так кадр становится
+# обычным виджетом — панель и подсказки ложатся поверх него без
+# отдельных окон, а полный экран — это то же самое окно (см. ниже).
+# Если QtMultimedia нет, плеер работает как прежде: mpv рисует в окно,
+# но тогда и полный экран остаётся отдельным окном.
+try:
+    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PyQt6.QtMultimediaWidgets import QVideoWidget
+    QT_VIDEO_OK = bool(QMediaPlayer)
+except Exception as _qt_video_err:  # noqa: BLE001
+    QAudioOutput = QMediaPlayer = QVideoWidget = None
+    QT_VIDEO_OK = False
+    print(f"[MPV] QtMultimedia недоступен, кадр рисует сам mpv: "
+          f"{_qt_video_err}")
+
+
+def _install_qt_renderer():
+    """Включает у mpv вывод кадров наружу, в QtMultimedia.
+
+    Ставить переменную надо ДО создания MPV: он читает окружение при
+    запуске. Куда рисовать, плагин узнаёт от QVideoWidget.
+    """
+    import os
+    os.environ['MPV_RENDER_API'] = 'qt'
+
 from ..widgets import widgets
 from ..backend.backend import TelegramBackend
 from ..system import telethon_boot as _telethon
+
+def _cursor_pos_win32():
+    """Положение курсора прямо от Windows; None — если спросить нельзя."""
+    try:
+        point = ctypes.wintypes.POINT()
+        if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            return None
+        return QPoint(point.x, point.y)
+    except Exception:
+        return None
+
 
 class PlayerWindow(QMainWindow):
     sig_pos = pyqtSignal(float)
@@ -104,15 +142,27 @@ class PlayerWindow(QMainWindow):
         self.root_layout.setContentsMargins(0, 0, 0, 0)
 
         self.container = widgets.PlayerContainer()
+        # ВИДЕО РИСУЕТ Qt, А НЕ mpv. QVideoWidget встаёт на место виджета
+        # mpv и растягивается той же раскладкой. Это и есть то, что даёт
+        # одно окно: кадр — обычный виджет, и панель ложится поверх него
+        # без отдельного окна, а полный экран больше не нужно выносить в
+        # другое окно. Если QtMultimedia нет — остаётся прежний способ
+        # (mpv в окно), и тогда полный экран снова отдельное окно.
+        self.use_qt_video = bool(QT_VIDEO_OK)
+        self._video_mode = 'qt' if self.use_qt_video else 'mpv'
+        self._osd_label = None
+        self._osd_timer = None
+        self.video_out = None
+        self.media = None
+        self._one_window_fs = False
+        self._windowed_geometry = None
+        self._sink_qt_video()
         self.bar = widgets.ControlBar()
-        # Панель управления должна стоять на «слоях окна», а не «слоях
-        # рабочего стола». С флагами по умолчанию она уходит в отдельный
-        # слой, и там её прячут чужие окна — в фуллскрине её не было видно.
-        #
-        # Это же свойство делает честным getattr(w, 'bar', None) в
-        # MouseWatch: панель приходит «не моим» окном, а по типу оказывается
-        # такой же дочерью окна фуллскрина, как и полоса состояния.
-        self.bar.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        # Панель управления — обычный дочерний виджет окна. Раньше она
+        # была нативным окном (WA_NativeWindow) и с «слоями окна», чтобы
+        # её было видно поверх кадра: кадром владел mpv. Теперь кадром
+        # владеет Qt, и это не нужно — панель попадает в то же окно, что
+        # и видео.
         # Подложка панели лежит на видео, поэтому рисуем её сами в
         # paintEvent панели (см. ControlBar.paintEvent). Таблице стилей это
         # не по силам: у QWidget фон из стиля без WA_StyledBackground не
@@ -208,56 +258,7 @@ class PlayerWindow(QMainWindow):
         # декодер и вывод через DirectX 11 отдают чёрный кадр при живом
         # звуке, не сообщая об ошибке. Тогда декодируем программно.
         self._compat = bool(self._setting('compat'))
-        self.player = mpv_boot.mpv.MPV(
-            wid=int(self.video_widget.winId()),
-            vo=config.VO_CHAIN,
-            hwdec=('no' if self._compat
-                   else config.HWDEC_MODES[self._hwdec_idx][0]),
-            # Если аппаратный декодер не справился — молча уходим в софт,
-            # вместо чёрного экрана при работающем звуке.
-            vd_lavc_software_fallback='yes',
-            idle='yes',
-            # Держим последний кадр на экране после конца файла: без этого
-            # mpv мгновенно уходит в idle, и свойство eof-reached не успевает
-            # сообщить о конце — автопереход к следующему ролику не срабатывал.
-            keep_open='yes',
-            # OSD рисует сам mpv, поэтому надписи "Буферизация/Громкость"
-            # гарантированно видны поверх видео без проблем с наложением
-            # Qt-виджетов. Уровень именно 1, а не 2: двойка заодно включает
-            # автоматический показ времени при перемотке, который появлялся
-            # слева сверху и дублировал счётчик в нижней панели. Свои
-            # надписи плеер показывает через show-text с тем же уровнем,
-            # так что они продолжают работать.
-            osd_level=1,
-            hr_seek='yes',
-
-            cache='yes',
-            # При нехватке данных mpv ставит паузу и показывает индикатор
-            # буферизации, вместо "замерзания" картинки.
-            cache_pause='yes',
-            cache_secs=config.MPV_CACHE_SECS,
-            # Поток гарантированно seekable (наш сервер отдаёт Range),
-            # убираем лишний probe-запрос и исключаем ошибочное
-            # определение потока как не-seekable.
-            force_seekable='yes',
-
-            demuxer_readahead_secs=config.MPV_DEMUX_READAHEAD_SECS,
-            demuxer_max_bytes='64MiB',
-            demuxer_max_back_bytes='16MiB',
-
-            # ВАЖНО: зондирование оставлено по умолчанию. Урезание
-            # probesize до 32 КБ ломало определение формата на больших
-            # файлах с индексом moov в хвосте: ffmpeg не находил
-            # видео-дорожку, и mpv играл только звук (чёрный экран).
-
-            # Ошибки и предупреждения mpv должны быть видны: при 'all=no'
-            # молчали и сбои декодера (чёрный экран при живом звуке).
-            msg_level='all=warn',
-
-            # Клавиатуру обрабатывает Qt, а не mpv.
-            input_default_bindings='no',
-            input_vo_keyboard='no',
-        )
+        self.player = self._make_mpv()
 
         @self.player.property_observer('time-pos')
         def _tp(_name, value):
@@ -334,6 +335,9 @@ class PlayerWindow(QMainWindow):
         self.sig_pos.connect(self.on_pos)
         self.sig_dur.connect(self.on_dur)
         self.sig_pause.connect(self.on_pause)
+        # Пауза — повод ПОКАЗАТЬ панель, а не только обновить её вид:
+        # см. _on_pause_changed.
+        self.sig_pause.connect(self._on_pause_changed)
         self.sig_eof.connect(self.on_eof)
         self.sig_vol.connect(self.on_vol)
         self.sig_mute.connect(self.on_mute)
@@ -366,7 +370,8 @@ class PlayerWindow(QMainWindow):
         # От этого зависит, появится ли панель ДО первого нажатия: см.
         # MouseWatch и hide_bar_idle.
         self._mouse_watch = widgets.MouseWatch(
-            self.fs_window, self._on_mouse_over, self._on_mouse_left)
+            self.fs_window, self._on_mouse_over, self._on_mouse_left,
+            on_move=self._mouse_over_tick)
 
         # Одиночный клик по видео = play/pause (с задержкой, чтобы отличить
         # от двойного клика = полный экран).
@@ -393,6 +398,9 @@ class PlayerWindow(QMainWindow):
         # «мышь ушла», которое приходит сразу после входа в режим, не
         # прятало панель в тот же миг.
         self._pip_bar_shown_ts = 0.0
+        # Последнее настоящее положение курсора (экранные координаты).
+        # По нему отличаем движение мыши от событий, которые Qt шлёт сам.
+        self._last_mouse_pos = None
 
         # Таймер обновления индикатора загрузки
         self.progress_timer = QTimer(self)
@@ -444,6 +452,88 @@ class PlayerWindow(QMainWindow):
         # видео-вывод на невидимом окне — картинка останется чёрной до
         # первого перезапуска файла. Запуск делает MainWindow.open_player
         # уже после show().
+
+    def _make_mpv(self):
+        """Создаёт mpv с нужным выводом кадра.
+
+        В режиме Qt держим те же опции, что и раньше, кроме вывода:
+        кадры отдаются наружу (vo=image), и декодер при этом остаётся
+        аппаратным. В режиме без QtMultimedia — всё как прежде: mpv
+        рисует прямо в окно своего виджета.
+        """
+        qt = self._video_mode == 'qt'
+        if qt:
+            _install_qt_renderer()
+        else:
+            import os
+            os.environ.pop('MPV_RENDER_API', None)
+        opts = dict(
+            vo=('image' if qt else config.VO_CHAIN),
+            hwdec=('no' if self._compat
+                   else config.HWDEC_MODES[self._hwdec_idx][0]),
+            # Если аппаратный декодер не справился — молча уходим в софт,
+            # вместо чёрного экрана при работающем звуке.
+            vd_lavc_software_fallback='yes',
+            idle='yes',
+            # Держим последний кадр на экране после конца файла: без этого
+            # mpv мгновенно уходит в idle, и свойство eof-reached не успевает
+            # сообщить о конце — автопереход к следующему ролику не срабатывал.
+            keep_open='yes',
+            # OSD: в режиме Qt надписи рисует окно, в режиме mpv — сам
+            # mpv в кадре (уровень 1, без него надписей не видно).
+            osd_level=(0 if qt else 1),
+            hr_seek='yes',
+            cache='yes',
+            # При нехватке данных mpv ставит паузу и показывает индикатор
+            # буферизации, вместо "замерзания" картинки.
+            cache_pause='yes',
+            cache_secs=config.MPV_CACHE_SECS,
+            # Поток гарантированно seekable (наш сервер отдаёт Range),
+            # убираем лишний probe-запрос и исключаем ошибочное
+            # определение потока как не-seekable.
+            force_seekable='yes',
+            demuxer_readahead_secs=config.MPV_DEMUX_READAHEAD_SECS,
+            demuxer_max_bytes='64MiB',
+            demuxer_max_back_bytes='16MiB',
+            # Ошибки и предупреждения mpv должны быть видны: при 'all=no'
+            # молчали и сбои декодера (чёрный экран при живом звуке).
+            msg_level='all=warn',
+            # Клавиатуру обрабатывает Qt, а не mpv.
+            input_default_bindings='no',
+            input_vo_keyboard='no',
+        )
+        if not qt:
+            opts['wid'] = int(self.video_widget.winId())
+        return mpv_boot.mpv.MPV(**opts)
+
+    def _sink_qt_video(self):
+        """Ставит QVideoWidget на место виджета mpv (один раз)."""
+        if not self.use_qt_video:
+            return
+        try:
+            w = QVideoWidget()
+            w.setObjectName('videoframe')
+            w.setStyleSheet('background: black;')
+            # Наведение выключено нарочно: QtMultimedia ставит окну
+            # собственный обработчик, и включённое наведение превращает
+            # остальные сообщения мыши в «мышь не моя» — не работают ни
+            # клик по кадру, ни двойной клик.
+            w.setAttribute(Qt.WidgetAttribute.WA_Hover, False)
+            mpv_view = self.container.video_widget
+            self.container.layout().replaceWidget(mpv_view, w)
+            mpv_view.hide()
+            self.video_out = w
+            self.media = QMediaPlayer(self)
+            self.media.setVideoOutput(w)
+            audio = QAudioOutput(self)
+            audio.setMuted(True)      # звук играет mpv, второй не нужен
+            self.media.setAudioOutput(audio)
+        except Exception as ex:
+            print(f"[MPV] кадр через QtMultimedia не подключился: {ex}")
+            self.use_qt_video = False
+            self._video_mode = 'mpv'
+            self.video_out = None
+            self.media = None
 
     def update_download_progress(self):
         if (self.current_video_index < 0
@@ -1017,6 +1107,13 @@ class PlayerWindow(QMainWindow):
             pass
 
         self.player.play(url)
+        if self.media is not None:
+            # Кадр рисует QtMultimedia; mpv отдаёт его по постоянному
+            # адресу вывода, поэтому источник Qt ставим один раз, а на
+            # каждый новый ролик лишь запускаем показ.
+            if self.media.source().isEmpty():
+                self.media.setSource(QUrl.fromLocalFile('image://mpv'))
+            self.media.play()
 
         # Значок на панели — сразу «пауза», потому что ролик пошёл.
         #
@@ -1029,8 +1126,8 @@ class PlayerWindow(QMainWindow):
         self.bar.btn_play.setIcon(icons.get_icon('pause'))
         self.pip_bar.set_player_state(False)
 
-        print(f"[MPV] окно видео {self.video_widget.width()}x"
-              f"{self.video_widget.height()}")
+        vw = self.video_out or self.video_widget
+        print(f"[MPV] окно видео {vw.width()}x{vw.height()}")
 
         # Страховка: если видео-дорожка так и не определилась, перезапускаем
         # файл — это ровно то, что делает клавиша H.
@@ -1382,15 +1479,59 @@ class PlayerWindow(QMainWindow):
         return default if value is None else value
 
     def show_osd(self, text, timeout_ms=1200):
-        """Показывает текст поверх видео через OSD mpv (надёжно при WA_PaintOnScreen).
+        """Показывает текст поверх видео.
 
-        Уровень 1 согласован с osd_level в конструкторе MPV: свои надписи
-        видны, а автоматическое время перемотки от mpv — нет.
+        Когда кадр рисует mpv — надписи рисует его OSD (уровень 1
+        согласован с osd_level конструктора). Когда кадр рисует Qt
+        (один аккуратный кадр), надпись показывается поверх кадра в
+        самом окне: OSD mpv там не видно.
         """
+        if self.use_qt_video:
+            self._show_window_osd(text, timeout_ms)
+            return
         try:
             self.player.command('show-text', text, int(timeout_ms), 1)
         except Exception:
             pass
+
+    def _show_window_osd(self, text, timeout_ms=1200):
+        """Подсказка поверх кадра — обычная надпись в окне плеера."""
+        try:
+            if self._osd_label is None:
+                label = QLabel(self.container)
+                label.setObjectName('osdtext')
+                label.setAttribute(
+                    Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                label.setAttribute(
+                    Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                label.setStyleSheet(
+                    '#osdtext { background: rgba(10, 12, 16, 0.72);'
+                    ' color: #eef2f6; border-radius: 10px;'
+                    ' padding: 8px 16px; font-size: 16px; }')
+                self._osd_label = label
+                self._osd_timer = QTimer(self)
+                self._osd_timer.setSingleShot(True)
+                self._osd_timer.timeout.connect(self._hide_window_osd)
+            self._osd_label.setText(text)
+            self._osd_label.adjustSize()
+            self._place_window_osd()
+            self._osd_label.show()
+            self._osd_label.raise_()
+            self._osd_timer.start(max(300, int(timeout_ms)))
+        except Exception:
+            pass
+
+    def _place_window_osd(self):
+        label = self._osd_label
+        host = self.container
+        if label is None or host is None:
+            return
+        label.move(max(0, (host.width() - label.width()) // 2),
+                   max(0, host.height() - label.height() - 24))
+
+    def _hide_window_osd(self):
+        if self._osd_label is not None:
+            self._osd_label.hide()
 
     def _video_title(self, index):
         try:
@@ -1451,6 +1592,16 @@ class PlayerWindow(QMainWindow):
         # и дальше всё идёт как обычно.
         if self.pip_window.isVisible():
             self._exit_pip()
+        if self.use_qt_video:
+            # Кадром владеет Qt — полный экран делаем в ТОМ ЖЕ окне.
+            if self.is_fullscreen_one_window():
+                self._exit_one_window_fullscreen()
+            else:
+                self._enter_one_window_fullscreen()
+            return
+        # Без QtMultimedia кадром владеет mpv, и вынести его в то же окно
+        # наверх панели нельзя — остаётся прежний способ с отдельным
+        # окном фуллскрина.
         if self.fs_window.isVisible():
             self._mouse_watch.stop()
             self.fs_window.hide()
@@ -1505,6 +1656,63 @@ class PlayerWindow(QMainWindow):
             # появлялась лишь после того, как событие движения дойдёт до
             # Qt, и первое нажатие по кнопке уходило в видео.
             self._mouse_watch.start()
+
+    # ------------------------------------------------------------------
+    # Полный экран в одном окне (кадр через Qt)
+    # ------------------------------------------------------------------
+    def is_fullscreen_one_window(self):
+        """Полный экран сейчас показан в самом окне плеера."""
+        return bool(getattr(self, '_one_window_fs', False))
+
+    def _enter_one_window_fullscreen(self):
+        """Растягивает окно плеера на весь экран.
+
+        Ничего не переносим и не создаём: это же окно растягивается,
+        Windows снимает рамку и заголовок — в Alt+Tab всё время одно
+        окно. Панель остаётся в раскладке окна внизу, как в оконном
+        режиме: при показе и скрытии по таймеру меняется высота кадра,
+        и mpv мгновенно пересчитывает картинку под новый размер.
+        """
+        if self._one_window_fs:
+            return
+        self._windowed_geometry = self.geometry()
+        self._one_window_fs = True
+        # Панель: скругление и прозрачная подложка, как ей положено в
+        # полном экране. Размер не трогаем — вид панели прежний.
+        self.bar.set_rounded(True)
+        self.setWindowState(
+            self.windowState() | Qt.WindowState.WindowFullScreen)
+        self.show_fullscreen_controls()
+
+    def _exit_one_window_fullscreen(self):
+        """Возвращает окно плеера к прежнему размеру."""
+        if not self._one_window_fs:
+            return
+        self._one_window_fs = False
+        self.bar_timer.stop()
+        self.bar.set_rounded(False)
+        self.setWindowState(
+            self.windowState() & ~Qt.WindowState.WindowFullScreen)
+        if self._windowed_geometry is not None:
+            self.setGeometry(self._windowed_geometry)
+        self.bar.show()
+        if self.video_out is not None:
+            self.video_out.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def show_fullscreen_controls(self):
+        """Показывает панель и курсор в полном экране и запускает таймер."""
+        self.poke_bar()
+        if not self.player.pause:
+            self.bar_timer.start(config.BAR_HIDE_MS)
+        self.activateWindow()
+        self.setFocus()
+        self._mouse_watch.start()
+
+    def _is_fullscreen_view(self):
+        """Полный экран сейчас на экране — любым из двух способов."""
+        return (self.fs_window.isVisible()
+                or self.is_fullscreen_one_window())
 
     # ------------------------------------------------------------------
     # Картинка в картинке
@@ -1926,7 +2134,7 @@ class PlayerWindow(QMainWindow):
 
     def poke_bar(self):
         """Показывает панель управления и продлевает её жизнь."""
-        if self.fs_window.isVisible():
+        if self._is_fullscreen_view():
             # show() на уже видимой панели заставлял бы окно лишний раз
             # перерисовываться — а вызывается это четыре раза в секунду.
             if not self.bar.isVisible():
@@ -1935,6 +2143,112 @@ class PlayerWindow(QMainWindow):
                 self.fs_window.setCursor(Qt.CursorShape.ArrowCursor)
             if not self.player.pause:
                 self.bar_timer.start(config.BAR_HIDE_MS)
+
+    def _on_pause_changed(self, paused):
+        """Паузу включили — сразу показать панель.
+
+        Это не то же самое, что on_pause: тот обновляет вид панели, а
+        здесь важно ПОЯВЛЕНИЕ. Раньше панель появлялась на паузе только
+        через toggle_play_pause, то есть по пробелу или кнопке. А пауза
+        бывает и не от них: mpv сам ставит её, когда кончились данные
+        (cache-pause), при перемотке, при старте ролика. Тогда панель
+        оставалась спрятанной, и видео «висело на паузе» без кнопок.
+        """
+        if paused and not self._closed and self._is_fullscreen_view():
+            self.bar_timer.stop()
+            if not self.bar.isVisible():
+                self.poke_bar()
+
+    def _mouse_over_tick(self):
+        """Опрос MouseWatch: курсор над окном фуллскрина.
+
+        Вызывается раз в config.MOUSE_POLL_MS, пока окно фуллскрина на
+        экране. Сдвинулся курсор — панель показываем и жизнь ей
+        продлеваем. Не сдвинулся — панель всё равно нужна, если её нет:
+        на паузе и в начале ролика события мыши могут вовсе не дойти
+        (мышь лежит неподвижно), а кнопки под курсором должны быть.
+        Первое нажатие тогда попадёт в кнопку, а не в видео.
+
+        Почему опрос, а не события: кадр в фуллскрине рисует mpv в его
+        собственное окно, и события мыши над ним то приходят наведением,
+        то не приходят вовсе — на настоящем плеере проверено, что
+        при движении мыши окно не получает НИ ОДНОГО события. Опрос
+        положения курсора от этого не зависит.
+        """
+        if not self._is_fullscreen_view():
+            return
+        pos = _cursor_pos_win32()
+        if pos is None:
+            return
+        moved = pos != self._last_mouse_pos
+        self._last_mouse_pos = pos
+        if not moved:
+            # Курсор не сдвинулся: жизнь стоящей панели по одному
+            # опросу не продлеваем — она горит своим таймером. Но на
+            # паузе и в самом начале ролика панель должна быть на
+            # экране: событий мыши там может не быть вовсе.
+            try:
+                paused = bool(self.player.pause)
+            except Exception:
+                paused = False
+            if (paused or self._last_pos < 0.5) and not self.bar.isVisible():
+                self.poke_bar()
+            return
+        if not self.bar.isVisible():
+            self.poke_bar()
+        elif not self.player.pause:
+            # Панель видна и мышь сдвинулась: жизнь ей продлеваем.
+            # Стоящая панель по одному опросу жизнь не продлевает —
+            # она горит своим таймером.
+            self.bar_timer.start(config.BAR_HIDE_MS)
+
+    def _hover_moved(self):
+        """Мышь сдвинулась над кадром: запомнить и показать панель.
+
+        Вызывается и из события наведения, и из опроса MouseWatch: кадр
+        в фуллскрине — виджет-окно внутри окна, и Qt ведёт для него
+        наведение (HoverMove) отдельно от MouseMove, а часть событий
+        вообще не доходит. Положение курсора запоминаем ВСЕГДА, в любом
+        режиме: по нему _mouse_moved отличает настоящее движение от
+        событий, которые Qt шлёт само, без движения. А панель показываем
+        только в фуллскрине и только при игре.
+        """
+        pos = _cursor_pos_win32()
+        if pos is None:
+            return
+        if pos == self._last_mouse_pos:
+            return
+        self._last_mouse_pos = pos
+        if self._is_fullscreen_view() and not self.player.pause:
+            self.poke_bar()
+
+    def _mouse_moved(self, event=None):
+        """Показать панель, если курсор действительно сдвинулся.
+
+        Голое «есть событие MouseMove» движением не считается. Qt
+        присылает такие же события само, без всякой мыши: оно
+        пересчитывает, что лежит под курсором, когда над ним появился,
+        исчез или сдвинулся виджет (например, панель спряталась). По
+        такому событию панель показывать нельзя — она всплывала бы сама
+        и больше не пряталась.
+
+        А решает всё положение курсора в экранных координатах: у
+        настоящего движения оно меняется, у синтетики — нет. Читаем его
+        от Windows, а не через QCursor: позиция QCursor обновляется из
+        событий Qt, а нам нужна свежая, до того как их обработали.
+        """
+        pos = _cursor_pos_win32()
+        if pos is None:
+            # Спросить Windows не вышло — верим событию, если оно от
+            # настоящего устройства: пусть лучше панель лишний раз
+            # появится.
+            if event is not None and event.spontaneous():
+                self.poke_bar()
+            return
+        if pos == self._last_mouse_pos:
+            return
+        self._last_mouse_pos = pos
+        self.poke_bar()
 
     def changeEvent(self, event):
         """Возврат в окно плеера.
@@ -1948,6 +2262,14 @@ class PlayerWindow(QMainWindow):
             if event.type() == QEvent.Type.ActivationChange:
                 if self.isActiveWindow():
                     self._on_player_activated()
+            elif event.type() == QEvent.Type.WindowStateChange:
+                # Полный экран в одном окне включали мы — но выключить
+                # его могут и средствами Windows (Win+стрелка). Тогда
+                # возвращаем панель на место, как при обычном выходе.
+                if (self._one_window_fs
+                        and not (self.windowState()
+                                 & Qt.WindowState.WindowFullScreen)):
+                    self._exit_one_window_fullscreen()
         except Exception:
             pass
         super().changeEvent(event)
@@ -1964,7 +2286,12 @@ class PlayerWindow(QMainWindow):
         Справку по клавишам не трогаем: она висит поверх и живёт своей
         жизнью.
         """
-        if not self.fs_window.isVisible():
+        if not self._is_fullscreen_view():
+            return
+        if self.is_fullscreen_one_window():
+            # Одно окно: Alt+Tab активирует его же — панель сразу на
+            # месте, курсор вернуть в кадр.
+            self.poke_bar()
             return
         # Опрос начинаем заново: пока курсор был в чужом окне, он вправе
         # был решить, что мышь ушла, и заглушить панель. Сброс заставляет
@@ -1989,7 +2316,7 @@ class PlayerWindow(QMainWindow):
         поведение должно быть прежним — клавиши принадлежат плееру.
         """
         try:
-            if self.fs_window.isVisible():
+            if self._is_fullscreen_view():
                 self.fs_window.activateWindow()
                 self.fs_window.setFocus()
             else:
@@ -2006,7 +2333,7 @@ class PlayerWindow(QMainWindow):
         Во время воспроизведения она потом уйдёт по таймеру, как обычно:
         этот показ жизнь панели не продлевает, просто выбирает момент.
         """
-        if not self.fs_window.isVisible():
+        if not self._is_fullscreen_view():
             return
         if self.bar.isVisible():
             return
@@ -2020,26 +2347,33 @@ class PlayerWindow(QMainWindow):
 
         Без этого панель висела поверх чужих окон, пока таймер не истечёт.
         """
-        if not self.fs_window.isVisible():
+        if not self._is_fullscreen_view():
             return
         self.bar_timer.stop()
         if self.bar.isVisible():
             self.bar.hide()
-        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
+        target = (self if self.is_fullscreen_one_window()
+                  else self.fs_window)
+        target.setCursor(Qt.CursorShape.BlankCursor)
 
     def _cursor_over_bar(self):
-        """Курсор сейчас над панелью управления."""
+        """Курсор сейчас над панелью управления.
+
+        Положение берём у Windows, а не у QCursor: внутренняя позиция
+        QCursor обновляется по событиям и может отставать от настоящей.
+        Мелочь, а без неё панель упрямо не пряталась, стоило курсору
+        хоть раз пройти над ней.
+        """
         try:
             if not self.bar.isVisible():
                 return False
-            local = self._mouse_watch.local_pos()
-            if local is None:
+            xy = _cursor_pos_win32()
+            if xy is None:
                 return False
-            # local_pos считает от левого верхнего угла окна фуллскрина,
-            # а панель живёт в его же координатах: переводим в экранные и
-            # смотрим прямоугольник панели на экране.
-            base = self.fs_window.mapToGlobal(QPoint(0, 0))
-            where = base + local
+            where = QPoint(*xy)
+            # where — уже экранная точка: панель, даже в фуллскрине,
+            # живёт в экранных же координатах, поэтому сравниваем с её
+            # прямоугольником на экране.
             return QRect(self.bar.mapToGlobal(QPoint(0, 0)),
                          self.bar.size()).contains(where)
         except Exception:
@@ -2052,7 +2386,7 @@ class PlayerWindow(QMainWindow):
         панелью. Раньше кнопки убирались ровно в тот миг, когда до них
         дотянулись, и целиться приходилось наугад.
         """
-        if not self.fs_window.isVisible():
+        if not self._is_fullscreen_view():
             return
         try:
             if self.player.pause:
@@ -2063,7 +2397,9 @@ class PlayerWindow(QMainWindow):
             self.bar_timer.start(config.BAR_HIDE_MS)
             return
         self.bar.hide()
-        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
+        target = (self if self.is_fullscreen_one_window()
+                  else self.fs_window)
+        target.setCursor(Qt.CursorShape.BlankCursor)
 
     def _playlist_resize_event(self, event):
         """Перетаскивание левого края панели списка: меняет её ширину.
@@ -2193,8 +2529,13 @@ class PlayerWindow(QMainWindow):
         # но только когда окно теряет мышь надолго; Leave — точный сигнал
         # на случай, когда Qt его всё-таки доставил.
         if (obj is self and t == QEvent.Type.Leave
-                and self.fs_window.isVisible()):
+                and self._is_fullscreen_view()):
             self._on_mouse_left()
+
+        # Наведение на кадр — тоже повод показать панель: в фуллскрине
+        # кадр приходит часто именно наведением, а не MouseMove.
+        if t == QEvent.Type.HoverMove:
+            self._hover_moved()
 
         if t == QEvent.Type.MouseMove:
             # В PiP окно таскается за картинку: рамки, за которую его
@@ -2229,9 +2570,15 @@ class PlayerWindow(QMainWindow):
                 if want != self._pip_cursor:
                     self._pip_cursor = want
                     self.pip_window.setCursor(want)
-            # В фулскрине движение мыши снова показывает панель управления.
-            if self.fs_window.isVisible():
-                self.poke_bar()
+            # В фуллскрине движение мыши снова показывает панель управления.
+            # Именно настоящее движение: события без движения (панель
+            # спряталась, виджет сменился) панель не будят, иначе она
+            # всплывала бы сама и больше не пряталась. Движения над
+            # самой панелью не продлевают ей жизнь — иначе она не уйдёт,
+            # пока по ней водят курсором.
+            if (self._is_fullscreen_view()
+                    and not (obj is self.bar or obj.parent() is self.bar)):
+                self._mouse_moved(event)
             # В PiP панель тоже появляется от движения мыши и уходит сама.
             if self.pip_window.isVisible():
                 self._show_pip_bar()
@@ -2239,6 +2586,11 @@ class PlayerWindow(QMainWindow):
             # Возвращаем фокус окну, чтобы горячие клавиши работали и после
             # клика по области видео.
             self.setFocus()
+            if self.fs_window.isVisible() and not self.player.pause:
+                # Нажатие мыши — тоже «есть мышь», пусть даже она не
+                # шевелилась: панель нужна человеку сейчас.
+                self._last_mouse_pos = None
+                self.poke_bar()
             if self._is_video_area(obj):
                 if (self.pip_window.isVisible()
                         and event.button() == Qt.MouseButton.LeftButton):
@@ -2423,7 +2775,7 @@ class PlayerWindow(QMainWindow):
             return
         if self.pip_window.isVisible():
             self._exit_pip()
-        elif self.fs_window.isVisible():
+        elif self._is_fullscreen_view():
             self.toggle_fullscreen()
 
     def _verify_vo(self, gen, attempt):
@@ -2541,6 +2893,8 @@ class PlayerWindow(QMainWindow):
 
         try:
             self.player['hwdec'] = mode
+            if not self.use_qt_video:
+                self.player['vo'] = config.VO_CHAIN
         except Exception:
             pass
 
@@ -2570,7 +2924,10 @@ class PlayerWindow(QMainWindow):
         except Exception:
             pass
         # vo берём цепочкой: если 'gpu' не поднимется, mpv сам возьмёт 'sdl'.
-        for name, value in (('vo', config.VO_CHAIN), ('hwdec', 'no'),
+        # В режиме Qt вывод — 'image' (кадры отдаются в QtMultimedia),
+        # и его менять нельзя, иначе картинка пропадёт.
+        vo = 'image' if self.use_qt_video else config.VO_CHAIN
+        for name, value in (('vo', vo), ('hwdec', 'no'),
                             ('gpu-context', 'auto')):
             try:
                 self.player[name] = value
@@ -2589,8 +2946,10 @@ class PlayerWindow(QMainWindow):
                 self.backend.set_setting('compat', False)
             except Exception:
                 pass
-            for name, value in (('hwdec', config.HWDEC_MODES[self._hwdec_idx][0]),
-                                ('vo', config.VO_CHAIN)):
+            vo = 'image' if self.use_qt_video else config.VO_CHAIN
+            for name, value in (
+                    ('hwdec', config.HWDEC_MODES[self._hwdec_idx][0]),
+                    ('vo', vo)):
                 try:
                     self.player[name] = value
                 except Exception:
@@ -2627,12 +2986,25 @@ class PlayerWindow(QMainWindow):
             self.backend.flush_history()
         except Exception:
             pass
+        # Геометрию сохраняем без полного экрана: при закрытии прямо из
+        # полного экрана сохранился бы и его размер, и в следующий раз
+        # плеер открывался бы во весь экран.
+        if self._one_window_fs:
+            self._exit_one_window_fullscreen()
         self._save_geometry()
 
         self._closed = True
         self.progress_timer.stop()
         self.bar_timer.stop()
         self._close_help()
+        # Кадр теперь может принадлежать QtMultimedia: закрываем и его,
+        # иначе проигрыватель останется держать видео за собой.
+        if self.media is not None:
+            try:
+                self.media.stop()
+                self.media.setSource(QUrl())
+            except Exception:
+                pass
         # Окно PiP живёт отдельно от главного: без этого оно осталось бы
         # висеть на экране после закрытия плеера.
         try:
