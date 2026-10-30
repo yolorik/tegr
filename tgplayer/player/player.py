@@ -89,96 +89,6 @@ def _cursor_pos_win32():
         return None
 
 
-class _FsStrip(QWidget):
-    """Кнопки управления в полном экране, когда всё в одном окне.
-
-    Зачем отдельный виджет, а не панель: поверх кадра mpv обычный виджет
-    не видно — mpv закрывает всё, что лежит над его окном внутри нашего.
-    Полоса стоит ПОД кадром, как панель в оконном режиме, и это работает.
-    Внутри — та же самая панель, кнопки не переделывались и нажимаются
-    так же.
-
-    Прячется через config.BAR_HIDE_MS бездействия, как панель, но
-    показывается только по настоящему движению мыши и держится на паузе —
-    см. _mouse_over_tick в PlayerWindow. Когда кадр возвращается в
-    раскладку, полоса отдаёт панель на место (detach).
-    """
-
-    def __init__(self, player):
-        super().__init__(player.centralWidget())
-        self._player = player
-        self._bar = player.bar
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(player.bar)
-        # Полоса НЕ занимает место в раскладке: она лежит поверх низа
-        # окна, и кадр от неё не меняет размер. Это и раньше решило бы
-        # «кадр прыгает», а заодно сохраняет пропорции видео.
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.hide()
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self.hide_strip)
-
-    def attach(self):
-        """Прикрепляет полосу к низу окна — поверх, не в раскладке."""
-        host = self._player.centralWidget()
-        self.setParent(host)
-        self.place()
-        self.show()
-        self.show_strip()
-        self.raise_()
-
-    def place(self):
-        """Ставит полосу по низу окна во всю ширину, поверх кадра."""
-        host = self.parentWidget()
-        if host is None:
-            return
-        height = max(self._bar.sizeHint().height(), self.sizeHint().height())
-        self.setGeometry(0, max(0, host.height() - height),
-                         host.width(), height)
-
-    def detach(self):
-        """Убирает полосу и возвращает кнопки в раскладку окна."""
-        self._timer.stop()
-        self.hide()
-        self._player._restore_bar_to_layout()
-
-    def show_strip(self):
-        """Показывает полосу и продлевает ей жизнь (как панель)."""
-        if not self._player.is_fullscreen_one_window():
-            return
-        self.place()
-        if not self.isVisible():
-            self.show()
-        self.raise_()
-        try:
-            paused = bool(self._player.player.pause)
-        except Exception:
-            paused = False
-        if not paused:
-            self._timer.start(config.BAR_HIDE_MS)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.place()
-
-    def hide_strip(self):
-        """Прячет полосу по бездействию."""
-        try:
-            if self._player.player.pause:
-                # На паузе кнопки не прячем: человек как раз собирается
-                # ими воспользоваться.
-                return
-        except Exception:
-            pass
-        self._timer.stop()
-        self.hide()
-        # Курсор не прячем: в полном экране он должен быть виден.
-        self._player.setCursor(Qt.CursorShape.ArrowCursor)
-
-
 class PlayerWindow(QMainWindow):
     sig_pos = pyqtSignal(float)
     sig_dur = pyqtSignal(float)
@@ -263,13 +173,9 @@ class PlayerWindow(QMainWindow):
         self.media = None
         self._one_window_fs = False
         self._windowed_geometry = None
-        # Растянута ли картинка на всё окно (полный экран) и набор
-        # свойств, с которым сейчас работает mpv.
-        self._fill_video = False
-        self._mpv_opts = {}
-        # Полоса кнопок для полного экрана в одном окне: панель там
-        # спрятана, а без кнопок не обойтись. Вне полного экрана скрыта.
-        self._fs_strip = None
+        # Панель в полном экране — своё прозрачное окно: кадр рисует
+        # mpv, и поверх него обычный виджет не виден (см. _attach_bar_window).
+        self._bar_in_window = False
         self._sink_qt_video()
         self.bar = widgets.ControlBar()
         # Панель управления — обычный дочерний виджет окна. Раньше она
@@ -623,31 +529,7 @@ class PlayerWindow(QMainWindow):
         )
         if not qt:
             opts['wid'] = int(self.video_widget.winId())
-        self._mpv_opts = dict(opts)
         return mpv_boot.mpv.MPV(**opts)
-
-    def _set_mpv_option(self, name, value):
-        """Меняет свойство mpv на лету, без перезапуска ролика.
-
-        Простого «запиши свойство» мало: часть свойств mpv применяет
-        только к заново открытому файлу. Уведомление
-        `file-local-options` заставляет перечитать весь набор свойств
-        (тот, что был при создании mpv, плюс новое) и применить его к
-        текущему файлу — ролик при этом не перезапускается.
-        """
-        if not hasattr(self, '_mpv_opts'):
-            self._mpv_opts = {}
-        # 1) само свойство текущего файла;
-        self._mpv_opts[name] = value
-        try:
-            # Свойство само по себе применяется к текущему кадру — без
-            # этого пришлось бы перезапускать ролик. Уведомление о смене
-            # набора свойств file-local-options оставлено не по делу:
-            # здесь оно не работает (mpv отвечает ошибкой), и в консоль
-            # летели предупреждения при каждом входе/выходе.
-            self.player[name] = value
-        except Exception as ex:
-            print(f"[MPV] {name} не применилось: {ex}")
 
     def _sink_qt_video(self):
         """Ставит QVideoWidget на место виджета mpv (один раз)."""
@@ -1802,15 +1684,14 @@ class PlayerWindow(QMainWindow):
     def _enter_one_window_fullscreen(self):
         """Растягивает окно плеера на весь экран — то же самое окно.
 
-        Почему не отдельное окно фуллскрина, как раньше: Alt+Tab
-        показывал три окна (плеер, видео, панель). Здесь ничего не
-        создаётся: растягивается это же окно, Windows сама снимает
-        рамку и заголовок.
+        Alt+Tab больше не показывает отдельных окон: отдельного окна
+        фуллскрина нет, растягивается это же окно плеера.
 
-        Панель управления в полном экране прячется: поверх кадра mpv её
-        не видно — mpv закрывает всё, что лежит над его окном внутри
-        нашего. Поэтому кнопки выходят в отдельную полосу под кадром
-        и прячутся через те же 2,5 с бездействия.
+        Панель управления при этом, как и в оригинале, уходит в своё
+        прозрачное окно поверх кадра — по центру внизу, со скруглёнными
+        углами. Поверх слоя mpv обычный виджет не виден, а прозрачное
+        окно видно. Логика показа/скрытия — из тестового плеера:
+        движение мыши показывает панель, 2,5 с без движения прячут.
         """
         if self._one_window_fs:
             return
@@ -1819,25 +1700,13 @@ class PlayerWindow(QMainWindow):
         # за выход из полного экрана.
         self._one_window_fs = True
         self._windowed_geometry = self.geometry()
-        self.bar.hide()
-        self.bar_timer.stop()
-        # Пока окно меняет состояние, Qt может прислать промежуточное
-        # WindowStateChange (например, «обычное»), и обработчик принял бы
-        # его за выход из полного экрана — вход срывался со второго раза.
-        # Лишний флаг выхода на это время не даётся.
         self._entering_fs = True
         try:
             self.setWindowState(
                 self.windowState() | Qt.WindowState.WindowFullScreen)
-            # Картинка — до краёв экрана (без чёрных полей), без
-            # перезапуска ролика.
-            self._set_fit_to_window(True)
         finally:
             self._entering_fs = False
-        if self._fs_strip is None:
-            self._fs_strip = _FsStrip(self)
-        self._fs_strip.attach()
-        self._fs_strip.place()
+        self._attach_bar_window()
         self._mouse_watch.start()
         self.activateWindow()
         self.setFocus()
@@ -1851,39 +1720,69 @@ class PlayerWindow(QMainWindow):
         try:
             self.bar_timer.stop()
             self._mouse_watch.stop()
-            if self._fs_strip is not None:
-                self._fs_strip.detach()
+            self._detach_bar_window()
             # Сначала снять полный экран, потом вернуть размер:
             # setGeometry в стиле полного экрана Qt не применяет (и
             # сыплет «Unable to set geometry»), а после снятия стиля
             # окно возвращается к прежнему размеру само — проверено.
             self.setWindowState(
                 self.windowState() & ~Qt.WindowState.WindowFullScreen)
-            self.bar.show()
             self.bar.set_rounded(False)
-            self._set_fit_to_window(False)
+            self._restore_bar_to_layout()
             self.setCursor(Qt.CursorShape.ArrowCursor)
         finally:
             self._exiting_fs = False
 
-    def _set_fit_to_window(self, on):
-        """Растягивать ли кадр на всё окно (без чёрных полей).
+    def _bar_window_rect(self):
+        """Где панель-окно стоит: по центру внизу экрана, как в оригинале."""
+        sg = (self.screen() or QApplication.primaryScreen()).geometry()
+        w = min(760, sg.width() - 60)
+        self.bar.setFixedWidth(w)
+        self.bar.adjustSize()
+        return QRect(sg.x() + (sg.width() - w) // 2,
+                     sg.y() + sg.height() - self.bar.height() - 36,
+                     w, self.bar.height())
 
-        В полном экране картинка должна идти до краёв экрана:
-        keepaspect=no растягивает её на всё окно, panscan обрезает то,
-        что вылезло за край. В оконном режиме возвращаются обычные
-        пропорции с полями.
-
-        Ролик НЕ перезапускаем: свойства ставим на лету (см.
-        _set_mpv_option) — так картинка не мигает и не сбивает порядок
-        событий окна.
-        """
-        on = bool(on)
-        if on == getattr(self, '_fill_video', False) and self._mpv_opts:
+    def _attach_bar_window(self):
+        """Уводит панель в прозрачное окно поверх кадра (полный экран)."""
+        if self._bar_in_window:
             return
-        self._fill_video = on
-        self._set_mpv_option('keepaspect', 'no' if on else 'yes')
-        self._set_mpv_option('panscan', 1.0 if on else 0.0)
+        self._bar_in_window = True
+        self.root_layout.removeWidget(self.bar)
+        # Прозрачность и флаги — ДО setParent: Qt создаёт нативное окно
+        # сразу с ними, иначе оно не станет слоёным и кадр под подложкой
+        # не просветит.
+        self.bar.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.bar.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.bar.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool)
+        self.bar.setParent(None)
+        # Клавиши принадлежат видео: панель фокус не забирает.
+        self._attach_bar_shortcuts()
+        # В полном экране панель плавает: скругление уместно.
+        self.bar.set_rounded(True)
+        self.bar.setGeometry(self._bar_window_rect())
+        self.bar.show()
+        self.poke_bar()
+
+    def _detach_bar_window(self):
+        """Возвращает панель из окна в раскладку (выход из полного экрана)."""
+        if not self._bar_in_window:
+            return
+        self._bar_in_window = False
+        self.bar_timer.stop()
+        self.bar.hide()
+        self.bar.setMinimumWidth(0)
+        self.bar.setMaximumWidth(16777215)
+        self.bar.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        if self.bar.isWindow():
+            self.bar.setWindowFlags(Qt.WindowType.Widget)
+        self._setup_bar_shortcuts()
 
     def show_fullscreen_controls(self):
         """Показывает панель и курсор в полном экране и запускает таймер."""
@@ -2319,15 +2218,20 @@ class PlayerWindow(QMainWindow):
 
     def poke_bar(self):
         """Показывает панель управления и продлевает её жизнь."""
-        if self._is_fullscreen_view():
-            # show() на уже видимой панели заставлял бы окно лишний раз
-            # перерисовываться — а вызывается это четыре раза в секунду.
-            if not self.bar.isVisible():
-                self.bar.show()
-            if self.fs_window.cursor().shape() != Qt.CursorShape.ArrowCursor:
-                self.fs_window.setCursor(Qt.CursorShape.ArrowCursor)
-            if not self.player.pause:
-                self.bar_timer.start(config.BAR_HIDE_MS)
+        if not self._is_fullscreen_view():
+            return
+        # show() на уже видимой панели заставлял бы окно лишний раз
+        # перерисовываться — а вызывается это четыре раза в секунду.
+        if not self.bar.isVisible():
+            if self._bar_in_window:
+                self.bar.setGeometry(self._bar_window_rect())
+            self.bar.show()
+        # Курсор в полном экране виден — возвращаем стрелку.
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        if self.bar.isWindow():
+            self.bar.raise_()
+        if not self.player.pause:
+            self.bar_timer.start(config.BAR_HIDE_MS)
 
     def _on_pause_changed(self, paused):
         """Паузу включили — сразу показать панель.
@@ -2379,11 +2283,6 @@ class PlayerWindow(QMainWindow):
             if (paused or self._last_pos < 0.5) and not self.bar.isVisible():
                 self.poke_bar()
             return
-        if self._one_window_fs:
-            # Полный экран в одном окне: мышь сдвинулась — полоса.
-            if self._fs_strip is not None:
-                self._fs_strip.show_strip()
-            return
         if not self.bar.isVisible():
             self.poke_bar()
         elif not self.player.pause:
@@ -2410,10 +2309,6 @@ class PlayerWindow(QMainWindow):
             return
         self._last_mouse_pos = pos
         if not self._is_fullscreen_view():
-            return
-        if self._one_window_fs:
-            if self._fs_strip is not None:
-                self._fs_strip.show_strip()
             return
         if not self.player.pause:
             self.poke_bar()
@@ -2444,10 +2339,6 @@ class PlayerWindow(QMainWindow):
         if pos == self._last_mouse_pos:
             return
         self._last_mouse_pos = pos
-        if self._one_window_fs:
-            if self._fs_strip is not None:
-                self._fs_strip.show_strip()
-            return
         self.poke_bar()
 
     def changeEvent(self, event):
@@ -2491,11 +2382,10 @@ class PlayerWindow(QMainWindow):
         if not self._is_fullscreen_view():
             return
         if self.is_fullscreen_one_window():
-            # Одно окно: Alt+Tab активирует его же — полоса кнопок сразу
-            # на месте, курсор вернуть в кадр.
-            if self._fs_strip is not None:
-                self._fs_strip.show_strip()
+            # Одно окно: Alt+Tab активирует его же — панель сразу на
+            # месте, курсор вернуть в кадр.
             self._mouse_watch.start()
+            self.poke_bar()
             self.setFocus()
             return
         # Опрос начинаем заново: пока курсор был в чужом окне, он вправе
@@ -2521,11 +2411,9 @@ class PlayerWindow(QMainWindow):
         поведение должно быть прежним — клавиши принадлежат плееру.
         """
         try:
+            self.activateWindow()
             if self._is_fullscreen_view():
-                self.fs_window.activateWindow()
-                self.fs_window.setFocus()
-            else:
-                self.activateWindow()
+                self.setFocus()
         except Exception:
             pass
 
@@ -2555,13 +2443,10 @@ class PlayerWindow(QMainWindow):
         if not self._is_fullscreen_view():
             return
         self.bar_timer.stop()
-        if self.bar.isVisible() and not self._one_window_fs:
+        if self.bar.isVisible():
             self.bar.hide()
-        if self._one_window_fs:
-            if self._fs_strip is not None:
-                self._fs_strip.hide_strip()
-            return
-        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
+        # Курсор не прячем: в полном экране он должен быть виден.
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _cursor_over_bar(self):
         """Курсор сейчас над панелью управления.
@@ -2593,10 +2478,6 @@ class PlayerWindow(QMainWindow):
         панелью. Раньше кнопки убирались ровно в тот миг, когда до них
         дотянулись, и целиться приходилось наугад.
         """
-        if self._one_window_fs:
-            if self._fs_strip is not None:
-                self._fs_strip.hide_strip()
-            return
         if not self._is_fullscreen_view():
             return
         try:
@@ -2608,7 +2489,8 @@ class PlayerWindow(QMainWindow):
             self.bar_timer.start(config.BAR_HIDE_MS)
             return
         self.bar.hide()
-        self.fs_window.setCursor(Qt.CursorShape.BlankCursor)
+        # Курсор не прячем: в полном экране он должен быть виден.
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _playlist_resize_event(self, event):
         """Перетаскивание левого края панели списка: меняет её ширину.

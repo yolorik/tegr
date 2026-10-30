@@ -1060,7 +1060,7 @@ class MouseWatch(QObject):
         self._on_over = on_over
         self._on_leave = on_leave
         # on_move — вызывать на КАЖДЫЙ шаг опроса, где курсор над окном:
-        # так окно узнаёт, что мышь сдвинулась, не полагаясь на события Qt.
+        # так окно узнаёт о движении мыши, не полагаясь на события Qt.
         self._on_move = on_move
         self._over = False
         self._inset = 0.0
