@@ -1541,12 +1541,30 @@ class PlayerWindow(QMainWindow):
             pass
 
     def _place_window_osd(self):
+        """Ставит подсказку над панелью управления.
+
+        Если отсчитывать от нижнего края кадра, подсказка оказывается
+        ровно там, где в полном экране висит панель-окно, и панель её
+        перекрывает. Панель — отдельное окно поверх кадра, поэтому её
+        высоту надо учесть: считаем, насколько она заходит на кадр, и
+        поднимаем надпись над ней.
+        """
         label = self._osd_label
         host = self.container
         if label is None or host is None:
             return
+        bottom = 24
+        try:
+            if self.bar.isVisible() and self._bar_in_window:
+                bar_bottom = self.bar.mapToGlobal(
+                    QPoint(0, self.bar.height())).y()
+                host_bottom = host.mapToGlobal(QPoint(0, host.height())).y()
+                coverage = max(0, host_bottom - bar_bottom)
+                bottom = coverage + 12
+        except Exception:
+            pass
         label.move(max(0, (host.width() - label.width()) // 2),
-                   max(0, host.height() - label.height() - 24))
+                   max(0, host.height() - label.height() - bottom))
 
     def _hide_window_osd(self):
         if self._osd_label is not None:
@@ -1733,6 +1751,32 @@ class PlayerWindow(QMainWindow):
         finally:
             self._exiting_fs = False
 
+    def _hide_window_from_switchers(self, win):
+        """Прячет окно панели из списка Alt+Tab и панели задач Windows.
+
+        Флаг Qt.Tool даёт WS_EX_TOOLWINDOW, но Qt сам его сбрасывает,
+        когда пересоздаёт окно под новые флаги, и панель всё равно
+        возвращается в список. Поэтому после создания нативного окна
+        ставим флаг сами, через Win32.
+        """
+        try:
+            hwnd = int(win.winId())
+            GWL_EXSTYLE = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            new_style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            if new_style != style:
+                ctypes.windll.user32.SetWindowLongW(
+                    hwnd, GWL_EXSTYLE, new_style)
+                # Флаг применяется к окну только после обновления рамки:
+                # окно прячется из списков и показывается заново.
+                SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+                ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+                ctypes.windll.user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        except Exception as ex:
+            print(f"[Окно] не удалось скрыть панель из списка окон: {ex}")
+
     def _bar_window_rect(self):
         """Где панель-окно стоит: по центру внизу экрана, как в оригинале."""
         sg = (self.screen() or QApplication.primaryScreen()).geometry()
@@ -1766,6 +1810,7 @@ class PlayerWindow(QMainWindow):
         # В полном экране панель плавает: скругление уместно.
         self.bar.set_rounded(True)
         self.bar.setGeometry(self._bar_window_rect())
+        self._hide_window_from_switchers(self.bar)
         self.bar.show()
         self.poke_bar()
 
