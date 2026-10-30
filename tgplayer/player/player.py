@@ -52,6 +52,18 @@ except Exception as _qt_video_err:  # noqa: BLE001
           f"{_qt_video_err}")
 
 
+def _best_decoder_for_qt():
+    """Декодер, с которым кадры отдаются наружу (в QtMultimedia).
+
+    Обычный аппаратный режим (copy-back) отдаёт кадр на GPU в текстуре,
+    а вывод «наружу» таких кадров не получает: Qt показывает чёрный
+    экран при живом звуке. В режиме ``d3d11va`` (или ``dxva2``) mpv
+    кладёт кадр в память, и его можно отдать куда угодно, сами кадры
+    при этом всё равно декодирует видеокарта.
+    """
+    return 'd3d11va'
+
+
 def _install_qt_renderer():
     """Включает у mpv вывод кадров наружу, в QtMultimedia.
 
@@ -467,10 +479,15 @@ class PlayerWindow(QMainWindow):
         else:
             import os
             os.environ.pop('MPV_RENDER_API', None)
+        if qt:
+            # В режиме Qt вывод получает кадр, только если он не на GPU.
+            hwdec = 'no' if self._compat else _best_decoder_for_qt()
+        else:
+            hwdec = ('no' if self._compat
+                     else config.HWDEC_MODES[self._hwdec_idx][0])
         opts = dict(
             vo=('image' if qt else config.VO_CHAIN),
-            hwdec=('no' if self._compat
-                   else config.HWDEC_MODES[self._hwdec_idx][0]),
+            hwdec=hwdec,
             # Если аппаратный декодер не справился — молча уходим в софт,
             # вместо чёрного экрана при работающем звуке.
             vd_lavc_software_fallback='yes',
