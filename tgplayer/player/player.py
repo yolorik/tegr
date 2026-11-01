@@ -1765,6 +1765,10 @@ class PlayerWindow(QMainWindow):
                 self.windowState() | Qt.WindowState.WindowFullScreen)
         finally:
             self._entering_fs = False
+        # Windows 11 рисует у любого окна тонкую рамку (1 пиксель) и
+        # скругляет углы — даже в полноэкранном режиме. Из-за неё по
+        # всему краю «просвечивала» кайма, а углы были скруглены.
+        self._strip_windows_frame()
         self._attach_bar_window()
         self._mouse_watch.start()
         self.activateWindow()
@@ -1791,6 +1795,30 @@ class PlayerWindow(QMainWindow):
             self.setCursor(Qt.CursorShape.ArrowCursor)
         finally:
             self._exiting_fs = False
+
+    def _strip_windows_frame(self):
+        """Убирает у окна рамку и скругления Windows 11.
+
+        В полноэкранном режиме Windows всё равно оставляет окну рамку в
+        один пиксель (DWMWA_VISIBLE_FRAME_BORDER_THICKNESS = 1) и
+        скругляет углы. Снаружи это видно как светлая кайма по краям и
+        скруглённые углы видео, сквозь которые виден рабочий стол.
+        Ставим «не скруглять» и убираем рамку цветом фона окна.
+        """
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            dwm = ctypes.windll.dwmapi
+            value = ctypes.c_int(1)          # DWMWCP_DONOTROUND
+            dwm.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(value), ctypes.sizeof(value))
+            # Цвет рамки = чёрный (как фон кадра): рамка сливается с ним.
+            # DWMWA_BORDER_COLOR принимает COLORREF 0x00BBGGRR.
+            color = ctypes.c_uint(0x00000000)
+            dwm.DwmSetWindowAttribute(
+                hwnd, 34, ctypes.byref(color), ctypes.sizeof(color))
+        except Exception as ex:
+            print(f"[Окно] оформление Windows не снято: {ex}")
 
     def _hide_window_from_switchers(self, win):
         """Прячет окно панели из списка Alt+Tab и панели задач Windows.
