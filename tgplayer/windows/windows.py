@@ -2005,7 +2005,7 @@ class MainWindow(QMainWindow):
             print(f"[Трей] значок готов, размеры: "
                   f"{[(s.width(), s.height()) for s in icon.availableSizes()]}")
         tray = QSystemTrayIcon(icon, self)
-        tray.setToolTip(f'{version.APP_NAME} {version.VERSION}')
+        tray.setToolTip(f'{version.APP_NAME} {version.DISPLAY_VERSION}')
 
         # Переключатели переехали в окно настроек: в меню значка их было
         # неудобно искать, и не видно, что уже включено.
@@ -2271,7 +2271,7 @@ class MainWindow(QMainWindow):
             if manual:
                 QMessageBox.information(
                     self, 'Обновления',
-                    f'У вас последняя версия {version.VERSION}.\n\n{reason}' if
+                    f'У вас последняя версия {version.DISPLAY_VERSION}.\n\n{reason}' if
                     'нет' in reason else f'Проверить не удалось: {reason}')
             return
 
@@ -2285,7 +2285,7 @@ class MainWindow(QMainWindow):
     def _offer_update(self, info):
         """Показывает предложение обновиться в полосе внутри окна."""
         self._pending_update = info
-        self.update_banner.show_offer(info, version.VERSION)
+        self.update_banner.show_offer(info, version.DISPLAY_VERSION)
 
     def _on_update_accepted(self):
         """Нажали «Обновить» в полосе."""

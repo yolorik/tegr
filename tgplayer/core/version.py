@@ -26,11 +26,20 @@
 """
 
 MAJOR = 3
-MINOR = 2
+MINOR = 3
 PATCH = 2
 LOADER = 'd'
 
+# Пометка сборки. Ставится, пока версия проверочная и в общий
+# канал её выкладывать рано: «(beta)» видно и в заголовке окна, и в
+# установщике, и в «О программе» — так никто не примет её за стабильную.
+# Для обычной сборки оставьте пустую строку.
+TAG = '(beta)'
+
 VERSION = f"{MAJOR}.{MINOR}.{PATCH}{LOADER}"
+
+# Версия для окна, установщика и свойств файла: с пометкой.
+DISPLAY_VERSION = f"{VERSION} {TAG}".strip()
 
 # Дата выпуска этой версии. Год «производства» показывается в настройках.
 RELEASE_YEAR = 2026
@@ -53,19 +62,19 @@ LOADER_TITLES = {
 
 
 def version_text():
-    """Короткая строка версии: «2.5.0d»."""
-    return VERSION
+    """Короткая строка версии: «2.5.0d» (с пометкой — «3.3.2d (beta)»)."""
+    return DISPLAY_VERSION
 
 
 def full_version_text():
     """Строка для журнала: версия и расшифровка схемы загрузчика."""
     loader = LOADER_TITLES.get(LOADER, 'неизвестная')
-    return f"{VERSION} (загрузчик {LOADER}: {loader})"
+    return f"{DISPLAY_VERSION} (загрузчик {LOADER}: {loader})"
 
 
 def window_title(base=None):
     """Заголовок окна с версией."""
-    return f"{base or APP_NAME} {VERSION}"
+    return f"{base or APP_NAME} {DISPLAY_VERSION}"
 
 
 def about_text():
@@ -75,7 +84,7 @@ def about_text():
     обычный блок сведений, а не как одна длинная строка.
     """
     return (
-        f"{APP_NAME} {VERSION}",
+        f"{APP_NAME} {DISPLAY_VERSION}",
         f"Сборка {RELEASE_YEAR} года",
         f"Схема загрузки: {LOADER}",
         "Сделано с помощью ИИ (DeepSeek 4.1 Flash).",

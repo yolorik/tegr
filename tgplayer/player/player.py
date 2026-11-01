@@ -1848,6 +1848,9 @@ class PlayerWindow(QMainWindow):
         self.bar.setGeometry(self._bar_window_rect())
         self._hide_window_from_switchers(self.bar)
         self.bar.show()
+        # После show() у окна есть настоящий дескриптор — прячем из
+        # Alt+Tab ещё раз: Qt сбрасывает этот признак при первом показе.
+        self._hide_window_from_switchers(self.bar)
         self.poke_bar()
 
     def _detach_bar_window(self):
@@ -1895,6 +1898,9 @@ class PlayerWindow(QMainWindow):
         if self.fs_window.isVisible():
             self.toggle_fullscreen()
 
+        # Запоминаем ДО любых изменений: ниже панель прячется, и по её
+        # then-состоянию уже не понять, была ли она на экране.
+        self._bar_was_visible_before_pip = self.bar.isVisible()
         self.video_row.removeWidget(self.container)
         self.pip_window.setCentralWidget(self.container)
         # Главное окно прячем: смысл режима — маленькая картинка и ничего
@@ -1915,6 +1921,10 @@ class PlayerWindow(QMainWindow):
             self._place_pip()
         self._show_pip_bar()
         self._update_pip_bar()
+        # В PiP главное окно спрятано: его опрос мыши и его панель ни к
+        # чему — иначе панель всплывала бы поверх PiP.
+        self._mouse_watch.stop()
+        self.bar.hide()
         self.pip_window.raise_()
         self.pip_window.activateWindow()
         self.show_osd("Картинка в картинке: двойной клик или Esc — выход",
@@ -2294,11 +2304,26 @@ class PlayerWindow(QMainWindow):
         self._pip_resize_geom = None
         self._pip_resize_start = None
         self.show()
+        # Панель главного окна возвращаем, если она была видна до ухода
+        # в PiP: иначе окно возвращалось без неё, и управлять было нечем,
+        # пока не тронешь мышью.
+        if getattr(self, '_bar_was_visible_before_pip', True):
+            self.bar.show()
         self.raise_()
         self.activateWindow()
 
     def poke_bar(self):
-        """Показывает панель управления и продлевает её жизнь."""
+        """Показывает панель управления и продлевает её жизнь.
+
+        В режиме «картинка в картинке» главное окно спрятано, и опрос
+        мыши всё равно дёргал его панель: она всплывала поверх PiP.
+        Поэтому сначала — проверки, что окно плеера вообще на экране и
+        что панель полагается показывать сейчас.
+        """
+        if not self.isVisible():
+            return
+        if self._bar_in_window and not self._one_window_fs:
+            return
         if not self._is_fullscreen_view():
             return
         # show() на уже видимой панели заставлял бы окно лишний раз
