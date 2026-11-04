@@ -159,7 +159,7 @@ def get_icon(kind):
 
 # Значки, которым нужна своя прорисовка в мелком размере: они стоят на
 # кнопках 24 точки в списке роликов.
-_SMALL_KINDS = ('download', 'downloaded', 'cancel', 'trash')
+_SMALL_KINDS = ('download', 'downloaded', 'cancel', 'trash', 'paused')
 
 
 # Общая часть мелких значков: те же фигуры, что рисуются крупно, но в
@@ -207,6 +207,16 @@ def _draw_small(p, kind, color):
         p.drawLine(QPointF(7, 21), QPointF(17, 21))
         p.drawLine(QPointF(10, 9.5), QPointF(10.5, 17.5))
         p.drawLine(QPointF(14, 9.5), QPointF(13.5, 17.5))
+    elif kind == 'paused':
+        # Две полоски в круге: загрузка стоит, её можно продолжить.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawEllipse(QRectF(4, 4, 16, 16))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawRect(QRectF(9.5, 8.5, 2.2, 7))
+        p.drawRect(QRectF(13.3, 8.5, 2.2, 7))
 
 
 def _draw_scaled(kind, color, size=24):

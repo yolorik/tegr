@@ -646,23 +646,38 @@ class TelegramBackend(QObject):
                 pass
 
     def cancel_user_download(self, doc_id):
-        """Останавливает загрузку, начатую кнопкой в списке (Qt-поток).
+        """Отменяет загрузку и удаляет её файлы из кэша (Qt-поток).
 
-        Кроме паузы, которую делает pause_download, здесь закрывается
-        писательский дескриптор файла. Без этого на Windows файл
-        остаётся занятым, и запущенный второй экземпляр Tegr очищает кэш
-        при старте (cleanup_cache), но удалить не может — файл повисает
-        и кэш растёт.
+        Это именно отмена, а не пауза: недокачанный файл стирается, и
+        при следующем «скачать» загрузка пойдёт с начала. Пауза — это
+        pause_user_download, у неё файл остаётся.
 
-        Отличие от discard_download: скачанное остаётся на диске, и
-        нажатие на значок загрузки продолжает с того же места.
+        Порядок важен: сначала закрываем писательский дескриптор, потом
+        удаляем файл — иначе на Windows удалить нечего, файл занят.
         """
         if self.loop is None or self.loop.is_closed():
+            self._remove_cache_files(doc_id)
             return
         self.loop.call_soon_threadsafe(
             self._cancel_user_download_on_loop, doc_id)
 
     def _cancel_user_download_on_loop(self, doc_id):
+        self._discard_download_on_loop(doc_id)
+
+    def pause_user_download(self, doc_id):
+        """Останавливает загрузку, сохраняя файл и прогресс (Qt-поток).
+
+        Из диалога загрузок это кнопка паузы: скачанное остаётся на
+        диске, и нажатие «продолжить» докачает с того же места, а не
+        начнёт заново. Дескриптор закрываем — иначе файл остаётся
+        занятым и кэш нечем чистить.
+        """
+        if self.loop is None or self.loop.is_closed():
+            return
+        self.loop.call_soon_threadsafe(
+            self._pause_user_download_on_loop, doc_id)
+
+    def _pause_user_download_on_loop(self, doc_id):
         e = self.cache.get(doc_id)
         if e is None or e.get('complete'):
             print(f"[Кэш] Останавливать нечего: {doc_id}")
@@ -1687,6 +1702,26 @@ class TelegramBackend(QObject):
                 or getattr(peer, 'chat_id', None)
                 or getattr(peer, 'user_id', None))
 
+    def _peer_title(self, peer_id):
+        """Название канала по его id, без обращения к сети.
+
+        Ищем в уже прочитанных диалогах: вкладка загрузок и меню по ПКМ
+        должны подписывать ролик каналом сразу, а не ждать запроса к
+        Telegram. Если канала в списке нет (например, ролик играет из
+        папки, которую сейчас не показывают), возвращаем пустую строку —
+        тогда показывается то, что уже известно.
+        """
+        try:
+            for dialog in self.dialogs:
+                if getattr(dialog, 'id', None) == peer_id:
+                    return getattr(dialog, 'name', '') or ''
+                entity = getattr(dialog, 'entity', None)
+                if entity is not None and getattr(entity, 'id', None) == peer_id:
+                    return getattr(dialog, 'name', '') or ''
+        except Exception:
+            pass
+        return ''
+
     async def load_data(self):
         self.dialogs = []
         dialog_map = {}
@@ -2428,6 +2463,15 @@ class TelegramBackend(QObject):
             message = None
         doc_id = document.id
         e = self.cache.get(doc_id)
+        if e is not None and message is not None:
+            # Канал, из которого ролик: нужен вкладке загрузок, чтобы
+            # было видно, откуда он. Запись могла создаться прелоадом
+            # без сообщения — тогда дополняем.
+            try:
+                e.setdefault('peer_id', message.peer_id)
+                e['peer_title'] = self._peer_title(message.peer_id)
+            except Exception:
+                pass
         if e is not None and message is not None and e.get('message') is None:
             # Запись могла быть создана без сообщения (прелоад по
             # документу). Дополняем: без него ссылку не обновить.
@@ -2584,6 +2628,11 @@ class TelegramBackend(QObject):
             'last_meta_save': 0.0,
             'started_ts': time.monotonic(),
         }
+        # Канал, откуда ролик: вкладка загрузок показывает его рядом с
+        # названием, чтобы было понятно, что именно качается.
+        if message is not None:
+            e['peer_id'] = message.peer_id
+            e['peer_title'] = self._peer_title(message.peer_id)
 
         self.cache[doc_id] = e
 

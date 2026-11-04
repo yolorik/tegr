@@ -1534,7 +1534,8 @@ class DownloadBadge(QToolButton):
         return self._state
 
     def set_state(self, state):
-        """'idle' — можно скачать, 'busy' — качается, 'done' — в кэше.
+        """'idle' — можно скачать, 'busy' — качается, 'done' — в кэше,
+        'paused' — остановлено, можно продолжить.
 
         Подсказку и значок ставим всегда, даже если кнопка скрыта: при
         наведении она появляется уже готовой, без короткой задержки на
@@ -1546,7 +1547,10 @@ class DownloadBadge(QToolButton):
             self.setToolTip('Удалить из кэша')
         elif state == 'busy':
             self.setIcon(icons.get_icon('cancel'))
-            self.setToolTip('Остановить загрузку в кэш')
+            self.setToolTip('Отменить загрузку и удалить из кэша')
+        elif state == 'paused':
+            self.setIcon(icons.get_icon('download'))
+            self.setToolTip('Продолжить загрузку')
         else:
             self.setIcon(icons.get_icon('download'))
             self.setToolTip('Скачать в кэш')
@@ -1657,6 +1661,13 @@ class VideoRow(QWidget):
         self.badge.set_state(state)
         self.update()
 
+    def set_paused(self):
+        """Загрузку остановили: полоса и подпись меняются на «на паузе»."""
+        self._state = 'paused'
+        self.badge.set_state('idle')
+        self.badge.set_hover(True)
+        self.update()
+
     def enterEvent(self, event):
         self.badge.set_hover(True)
         super().enterEvent(event)
@@ -1685,6 +1696,8 @@ class VideoRow(QWidget):
         fm = p.fontMetrics()
         # Текст занимает всё, кроме значка и места под полосу справа.
         right = self.BAR_W + self.PROGRESS_W + self.ICON_INSET + 14
+        if self._state not in ('busy', 'paused'):
+            right = self.BAR_W + self.ICON_INSET + 14
         rect = self.rect().adjusted(0, 0, -right, 0)
         elided = fm.elidedText(
             self.text, Qt.TextElideMode.ElideRight, rect.width())
@@ -1694,8 +1707,16 @@ class VideoRow(QWidget):
         p.setPen(color)
         p.drawText(QPoint(self.TEXT_LEFT, text_y), elided)
         p.end()
+        if self._state == 'paused':
+            # На паузе вместо полосы — серый след: видно, что загрузка
+            # начата, но стоит.
+            self._paint_progress(1.0, paused=True)
+            return
         if self._state != 'busy':
             return
+        self._paint_progress(self._progress)
+
+    def _paint_progress(self, progress, paused=False):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w = self.PROGRESS_W
@@ -1710,8 +1731,8 @@ class VideoRow(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 60))
         p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
-        p.setBrush(accent)
-        p.drawRoundedRect(QRectF(x, y, max(1.0, w * self._progress), h),
+        p.setBrush(QColor(255, 255, 255, 110) if paused else accent)
+        p.drawRoundedRect(QRectF(x, y, max(1.0, w * progress), h),
                           h / 2, h / 2)
         p.end()
 
@@ -1745,6 +1766,11 @@ class DownloadsView(QWidget):
             QListWidget.SelectionMode.SingleSelection)
         self.list.setUniformItemSizes(False)
         self.list.setWordWrap(False)
+        # ПКМ по строке: перейти к ролику на канале, пауза/продолжить,
+        # отменить, удалить.
+        self.list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._on_menu)
         lay.addWidget(self.list, 1)
 
         self.btn_clear = QPushButton('Удалить все скачанные')
@@ -1795,6 +1821,53 @@ class DownloadsView(QWidget):
         if cb is not None:
             cb(entry, action)
 
+    def _entry_at(self, pos):
+        """Запись загрузки по точке списка (для меню по ПКМ)."""
+        row = self.list.indexAt(pos).row()
+        if row < 0:
+            return None
+        item = self.list.item(row)
+        if item is None:
+            return None
+        name = item.data(Qt.ItemDataRole.UserRole)
+        widget = self.list.itemWidget(item)
+        if isinstance(widget, DownloadRow):
+            return widget.entry
+        return None if name is None else {'file': name}
+
+    def _on_menu(self, pos):
+        entry = self._entry_at(pos)
+        if entry is None:
+            return
+        state = entry.get('state') or 'busy'
+        menu = QMenu(self)
+        act_goto = menu.addAction('Перейти к ролику на канале')
+        menu.addSeparator()
+        if state == 'done':
+            act_pause = None
+            act_cancel = None
+            act_delete = menu.addAction('Удалить из кэша')
+        else:
+            act_delete = None
+            if state == 'paused':
+                act_pause = menu.addAction('Продолжить загрузку')
+            else:
+                act_pause = menu.addAction('Приостановить загрузку')
+            act_cancel = menu.addAction('Отменить и удалить')
+        menu.setStyleSheet(theme.build_style())
+        chosen = menu.exec(self.list.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_goto:
+            self._on_action(entry, 'goto')
+        elif act_pause is not None and chosen is act_pause:
+            self._on_action(entry, 'pause' if state != 'paused'
+                            else 'resume')
+        elif act_cancel is not None and chosen is act_cancel:
+            self._on_action(entry, 'cancel')
+        elif act_delete is not None and chosen is act_delete:
+            self._on_action(entry, 'delete')
+
 
 class DownloadRow(QWidget):
     """Строка загрузки: название, полоса, скорость и кнопка.
@@ -1803,7 +1876,8 @@ class DownloadRow(QWidget):
     QLabel внутри строки списка Qt сжимала, и текст обрезался.
     """
 
-    ROW_H = 34
+    # Высота с запасом под две строки текста: название и канал под ним.
+    ROW_H = 44
     BTN_W = 26
     BAR_W = 56
     # Высота виджета может не совпадать с подложкой выделения: строка
@@ -1848,11 +1922,11 @@ class DownloadRow(QWidget):
 
     def _refresh_badge(self):
         state = self.entry.get('state') or 'busy'
-        if state == 'done':
-            self.badge.set_state('done')
+        self.badge.set_state(state)
+        if state != 'idle':
+            # Готовую строку и строки с действием показываем без
+            # наведения: у них значок — не предложение, а состояние.
             self.badge.set_hover(True)
-        else:
-            self.badge.set_state('busy')
 
     def update_entry(self, entry):
         self.entry = dict(entry)
@@ -1861,7 +1935,11 @@ class DownloadRow(QWidget):
 
     def _clicked(self):
         state = self.entry.get('state')
-        action = 'delete' if state == 'done' else 'cancel'
+        # Нажатие по значку делает два разных действия, поэтому
+        # спрашиваем: у скачанного — удаление, у идущей загрузки —
+        # отмена, у стоящей — продолжение.
+        action = {'done': 'delete', 'busy': 'cancel',
+                  'paused': 'resume'}.get(state, 'cancel')
         try:
             self._on_action(self.entry, action)
         except Exception as ex:
@@ -1872,9 +1950,8 @@ class DownloadRow(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.badge.set_hover(False)
-        if self.entry.get('state') != 'done':
-            self.badge.set_state('busy')
+        if (self.entry.get('state') or 'busy') == 'idle':
+            self.badge.set_hover(False)
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -1885,11 +1962,13 @@ class DownloadRow(QWidget):
         except Exception:
             color = QColor('#ffffff')
         state = self.entry.get('state')
-        # Размер (у скачанного) или ход (у качающегося) — справа от
+        # Размер (у скачанного), ход или «на паузе» — справа от
         # названия, по центру строки, как размер в строке ролика.
         if state == 'done':
             sub = str(self.entry.get('size_text') or '')
-            pct = None
+        elif state == 'paused':
+            pct = float(self.entry.get('progress') or 0.0)
+            sub = f'на паузе · {int(round(pct * 100))}%'
         else:
             pct = float(self.entry.get('progress') or 0.0)
             speed = str(self.entry.get('speed_text') or '')
@@ -1904,20 +1983,25 @@ class DownloadRow(QWidget):
         small.setPixelSize(10)
         fm_small = QFontMetrics(small)
 
-        # Справа — значок, слева от него полоса прогресса (только пока
-        # качается), ещё левее — подпись. Ширину подписи считаем свою:
-        # иначе она стояла бы не там, где кончается название.
+        # Справа — значок, слева от него полоса прогресса (пока идёт
+        # загрузка или она на паузе), ещё левее — подпись. Ширину
+        # подписи считаем свою: иначе она стояла бы не там, где
+        # кончается название.
         right = self.BTN_W + self.ICON_GAP
-        if state == 'busy':
+        if state in ('busy', 'paused'):
             right += self.BAR_W + 8
         sub_w = fm_small.horizontalAdvance(sub) + 10
         # Центр строки по вертикали — тот же, что у значка: выделение
         # выше виджета на поля строки списка.
         center_y = (self.height() + self.ROW_EXTRA) // 2
 
-        # Вертикаль считаем по шрифту, а не AlignVCenter: он опускает
-        # текст на спуск ниже центра. Так же строка, как в списке роликов.
-        title_y = center_y - (fm.height() + 1) // 2 + fm.ascent()
+        # Две строки текста (название и канал) стоят блоком по центру
+        # выделения. Считаем общую высоту блока и рисуем сверху вниз,
+        # поэтому канал больше не уезжает за нижний край строки.
+        line_gap = 1
+        total_h = fm.height() + line_gap + fm_small.height()
+        block_top = center_y - total_h // 2
+        title_y = block_top + fm.ascent()
         p.setFont(font)
         p.setPen(color)
         title = str(self.entry.get('name') or '')
@@ -1925,23 +2009,31 @@ class DownloadRow(QWidget):
         elided = fm.elidedText(title, Qt.TextElideMode.ElideRight, avail)
         p.drawText(QPoint(6, title_y), elided)
 
-        # Подпись состояния — справа от названия, мельче и бледнее, а не
-        # у верхнего края: там она стояла над полосой отдельной строкой и
-        # вылезала за подложку. Рисуем ПОСЛЕ установки шрифта и пера,
-        # иначе она уходила тем же цветом, что и фон.
+        # Канал — мелким текстом сразу под названием: по нему видно,
+        # из какого канала ролик. Рисуем до подписи состояния и ПОСЛЕ
+        # установки шрифта и пера, иначе текст уходит цветом фона.
+        channel = str(self.entry.get('channel') or '')
         p.setFont(small)
-        p.setPen(QColor(color.red(), color.green(), color.blue(), 160))
+        p.setPen(QColor(color.red(), color.green(), color.blue(), 150))
+        if channel:
+            chan_elided = fm_small.elidedText(
+                channel, Qt.TextElideMode.ElideRight, avail)
+            chan_y = block_top + fm.height() + line_gap + fm_small.ascent()
+            p.drawText(QPoint(6, chan_y), chan_elided)
+
+        # Подпись состояния — справа от названия, по центру строки.
+        p.setPen(QColor(color.red(), color.green(), color.blue(), 170))
         sub_y = center_y - (fm_small.height() + 1) // 2 + fm_small.ascent()
         sub_x = self.width() - 6 - right
         p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub), sub_y),
                    sub)
         p.end()
 
-        if state != 'busy':
+        if state not in ('busy', 'paused'):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w, h = 56, 4
+        w, h = self.BAR_W, 4
         x = self.width() - w - 6 - self.BTN_W - 6
         y = (self.height() - h) // 2
         try:
@@ -1952,7 +2044,9 @@ class DownloadRow(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 60))
         p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
-        p.setBrush(accent)
+        # На паузе полоса серая: видно, что загрузка стоит.
+        p.setBrush(QColor(255, 255, 255, 110)
+                   if state == 'paused' else accent)
         p.drawRoundedRect(QRectF(x, y, max(1.0, w * progress), h),
                           h / 2, h / 2)
         p.end()
@@ -2166,6 +2260,11 @@ class MainWindow(QMainWindow):
         # Заглушки («Загрузка видео...», «Ничего не найдено») тоже
         # рисуются своим делегатом — с текстом и значком по центру.
         self.video_list.setItemDelegate(RowDelegate(24, self.video_list))
+        # ПКМ по ролику: скачать, пауза/продолжить, отменить, удалить.
+        self.video_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.video_list.customContextMenuRequested.connect(
+            self._on_video_menu)
         # itemActivated срабатывает и на Enter, и на двойной клик.
         self.video_list.itemActivated.connect(self.open_player)
         self.video_list.currentRowChanged.connect(self.on_video_selected)
@@ -4110,48 +4209,77 @@ class MainWindow(QMainWindow):
                     titles[doc.id] = m
         except Exception:
             pass
-        busy, done = [], []
+        busy, paused, done = [], [], []
         for doc_id, e in cache.items():
             try:
                 if e.get('removed'):
                     continue
                 name = self._doc_title(doc_id, titles, e)
+                channel = self._entry_channel(doc_id, e)
+                base = {
+                    'file': f'{doc_id}.part',
+                    'doc_id': doc_id,
+                    'name': name,
+                    'channel': channel,
+                    'peer_id': e.get('peer_id'),
+                    'message_id': getattr(e.get('message'), 'id', None),
+                }
                 if e.get('complete'):
-                    done.append({
-                        'file': f'{doc_id}.mp4',
-                        'doc_id': doc_id,
-                        'name': name,
-                        'state': 'done',
-                        'size_text': utils.fmt_size(
-                            self._file_size(f'{doc_id}.mp4')),
-                    })
+                    done.append(dict(
+                        base, file=f'{doc_id}.mp4', state='done',
+                        size_text=utils.fmt_size(
+                            self._file_size(f'{doc_id}.mp4'))))
                     continue
                 total = max(1, int(e.get('piece_count') or 1))
                 got = len(e.get('piece_done') or ())
                 speed = float(e.get('speed_bytes') or 0.0)
-                busy.append({
-                    'file': f'{doc_id}.part',
-                    'doc_id': doc_id,
-                    'name': name,
-                    'state': 'busy',
-                    'progress': got / total,
-                    'speed_text': (utils.fmt_speed(speed)
-                                   if speed > 0 else 'подготовка'),
-                })
+                if e.get('paused'):
+                    paused.append(dict(base, state='paused',
+                                       progress=got / total))
+                    continue
+                busy.append(dict(
+                    base, state='busy', progress=got / total,
+                    speed_text=(utils.fmt_speed(speed)
+                                if speed > 0 else 'подготовка')))
             except Exception:
                 continue
-        return busy + done
+        return busy + paused + done
+
+    def _entry_channel(self, doc_id, entry):
+        """Название канала, откуда качается ролик.
+
+        Берём из записи кэша (она помнит peer_id и название), а если
+        канала в списке не было — из сообщения, по которому загрузка
+        шла.
+        """
+        title = str(entry.get('peer_title') or '')
+        if title:
+            return title
+        message = entry.get('message')
+        peer_id = getattr(message, 'peer_id', None) if message else None
+        if peer_id is not None:
+            try:
+                title = self.backend._peer_title(peer_id)
+            except Exception:
+                title = ''
+        return title or 'канал неизвестен'
 
     def _doc_title(self, doc_id, titles, entry):
-        """Название ролика для вкладки загрузок."""
+        """Название ролика для вкладки загрузок.
+
+        Сначала подпись из сообщения — она у роликов осмысленная («Steam
+        заполнил нейрослот»), а имя файла вроде
+        `1b89a0dd7f7ae3a1.compressed.mp4` ничего не говорит. Имя файла —
+        только если подписи нет.
+        """
         message = titles.get(doc_id) or entry.get('message')
         name = ''
         if message is not None:
-            name = (getattr(getattr(message, 'file', None), 'name', None)
-                    or '')
+            text = str(getattr(message, 'message', '') or '').strip()
+            name = text.split('\n')[0][:120] if text else ''
             if not name:
-                text = str(getattr(message, 'message', '') or '').strip()
-                name = text.split('\n')[0] if text else ''
+                name = (getattr(getattr(message, 'file', None), 'name', None)
+                        or '')
         if not name:
             name = f'Ролик {doc_id}'
         return name
@@ -4173,29 +4301,159 @@ class MainWindow(QMainWindow):
         view.set_entries(entries)
         self._sync_downloads_tab(entries)
         busy = sum(1 for e in entries if e.get('state') == 'busy')
-        done = len(entries) - busy
+        paused = sum(1 for e in entries if e.get('state') == 'paused')
+        done = sum(1 for e in entries if e.get('state') == 'done')
+        parts = [f'Качается: {busy}']
+        if paused:
+            parts.append(f'на паузе: {paused}')
+        parts.append(f'скачано в кэш: {done}')
         view.hint.setText(
-            f'Качается: {busy} · скачано в кэш: {done}. '
-            'Крестик останавливает загрузку (скачанное остаётся), '
-            'корзина удаляет ролик из кэша.')
+            ' · '.join(parts) + '. ПКМ по строке — меню: перейти к ролику '
+            'на канале, пауза, отмена, удаление.')
         view.btn_clear.setEnabled(done > 0)
 
     def _downloads_action(self, entry, action):
-        """Нажатие значка во вкладке загрузок."""
+        """Действие над загрузкой из вкладки: значок или меню по ПКМ."""
         doc_id = entry.get('doc_id')
         if doc_id is None:
             return
-        if action == 'delete':
+        if action == 'goto':
+            self._goto_video(entry)
+        elif action == 'delete':
             self._cache_stopped.discard(doc_id)
             self.backend.delete_cached_file(doc_id)
             print(f"[Кэш] Удалён из кэша: {doc_id}")
         elif action == 'cancel':
+            # Отмена — это и остановка, и удаление недокачанного файла:
+            # такую загрузку человек не захотел вовсе.
             self._cache_stopped.add(doc_id)
-            # Пометку снимаем со всех строк, где этот ролик: иначе
-            # следующее нажатие стрелки уйдёт в «быстро пропустить».
             self._unpin_doc(doc_id)
             self.backend.cancel_user_download(doc_id)
+            print(f"[Кэш] Загрузка отменена и удалена: {doc_id}")
+        elif action == 'pause':
+            self._cache_stopped.add(doc_id)
+            self._unpin_doc(doc_id)
+            self.backend.pause_user_download(doc_id)
+            print(f"[Кэш] Загрузка на паузе: {doc_id}")
+        elif action == 'resume':
+            self._resume_download(doc_id, entry)
         QTimer.singleShot(200, self._refresh_downloads_view)
+        QTimer.singleShot(200, self._refresh_cache_rows)
+
+    def _entry_message(self, doc_id, entry):
+        """Сообщение для докачки: из кэша, из записи или из канала."""
+        try:
+            cached = self.backend.cache.get(doc_id) or {}
+            message = cached.get('message')
+            if message is not None:
+                return message
+        except Exception:
+            pass
+        message = entry.get('message')
+        if message is not None:
+            return message
+        try:
+            for m in self.backend.current_messages:
+                doc = getattr(getattr(m, 'media', None), 'document', None)
+                if doc is not None and doc.id == doc_id:
+                    return m
+        except Exception:
+            pass
+        return None
+
+    def _resume_download(self, doc_id, entry):
+        """Продолжает остановленную загрузку с того же места."""
+        message = self._entry_message(doc_id, entry)
+        if message is None:
+            print(f"[Кэш] Продолжить нечем: {doc_id}")
+            return
+        self._cache_stopped.discard(doc_id)
+        try:
+            for index, row in self._cache_rows.items():
+                doc = self.backend.current_messages[index].media.document
+                if doc.id == doc_id:
+                    self._cache_pinned.add(index)
+        except Exception:
+            pass
+        self.backend.submit_coroutine(
+            self.backend.ensure_cache(
+                message, workers=config.PARALLEL_WORKERS, resume=True))
+        print(f"[Кэш] Загрузка продолжена: {doc_id}")
+
+    def _goto_video(self, entry):
+        """Открывает канал и показывает в списке тот самый ролик.
+
+        По записи кэша известно сообщение: из него берём канал и id.
+        Переключаемся на «Каналы», выбираем канал и ставим выделение на
+        строку ролика — дальше Enter или двойной клик открывает его.
+        """
+        peer_id = entry.get('peer_id')
+        message_id = entry.get('message_id')
+        if peer_id is None:
+            self.set_status('Неизвестно, из какого канала этот ролик')
+            return
+        index = self._downloads_tab_index()
+        if index >= 0:
+            self.main_tabs.setCurrentIndex(0)
+        self._select_channel_by_id(peer_id)
+        if message_id is not None:
+            QTimer.singleShot(600, lambda: self._select_video_msg(
+                message_id))
+
+    def _select_channel_by_id(self, peer_id):
+        """Выбирает канал в левом списке по id.
+
+        Строка списка и сам канал — разные вещи: в общем списке свои и
+        найденные лежат вперемешку, и что за строкой стоит, хранит
+        _search_rows.
+        """
+        rows = getattr(self, '_search_rows', [])
+        for row, entry in enumerate(rows):
+            if not entry:
+                continue
+            kind, dialog = entry
+            if kind != 'mine':
+                continue
+            try:
+                if dialog.id == peer_id:
+                    self.channel_list.setCurrentRow(row)
+                    return True
+            except Exception:
+                continue
+        print(f"[Кэш] Канал {peer_id} не найден в списке")
+        return False
+
+    def _select_video_msg(self, message_id):
+        """Ставит выделение на строку ролика с нужным id сообщения."""
+        try:
+            messages = self.backend.current_messages
+        except Exception:
+            return
+        index = None
+        for i, message in enumerate(messages):
+            if getattr(message, 'id', None) == message_id:
+                index = i
+                break
+        if index is None:
+            print(f"[Кэш] Ролик {message_id} не найден в канале")
+            return
+        item = self._video_item_for(index)
+        if item is None:
+            print(f"[Кэш] Строки ролика {message_id} нет в списке")
+            return
+        self.video_list.scrollToItem(item)
+        self.video_list.setCurrentItem(item)
+
+    def _video_item_for(self, index):
+        """Строка списка по индексу в current_messages."""
+        for row in range(self.video_list.count()):
+            item = self.video_list.item(row)
+            try:
+                if int(item.data(Qt.ItemDataRole.UserRole)) == index:
+                    return item
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _unpin_doc(self, doc_id):
         """Снимает отметку «качается вручную» с ролика по его id."""
@@ -4230,7 +4488,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self._refresh_downloads_view)
 
     def _cache_status(self, doc_id):
-        """Состояние кэша ролика: ('done'|'busy', доля) или None.
+        """Состояние кэша ролика: ('done'|'busy'|'paused', доля) или None.
 
         Смотрим в записи кэша бэкенда: готовая запись — это .mp4 целиком,
         незавершённая — доля скачанных кусков. Если записи нет, но файл
@@ -4252,7 +4510,8 @@ class MainWindow(QMainWindow):
                 return None
             total = max(1, int(e.get('piece_count') or 1))
             done = len(e.get('piece_done') or ())
-            return ('busy', done / total)
+            state = 'paused' if e.get('paused') else 'busy'
+            return (state, done / total)
         except Exception:
             return None
 
@@ -4268,6 +4527,8 @@ class MainWindow(QMainWindow):
         self._cache_state[doc.id] = status
         if status is None:
             row.set_state('idle')
+        elif status[0] == 'paused':
+            row.set_paused()
         else:
             row.set_state(status[0], status[1])
 
@@ -4286,7 +4547,10 @@ class MainWindow(QMainWindow):
                 busy = busy or status[0] == 'busy'
                 if self._cache_state.get(doc.id) != status:
                     self._cache_state[doc.id] = status
-                    row.set_state(status[0], status[1])
+                    if status[0] == 'paused':
+                        row.set_paused()
+                    else:
+                        row.set_state(status[0], status[1])
             elif self._cache_state.get(doc.id) is not None:
                 self._cache_state[doc.id] = None
                 row.set_state('idle')
@@ -4316,16 +4580,22 @@ class MainWindow(QMainWindow):
             self._cache_pinned.discard(index)
             self._delete_from_cache(doc_id)
         elif state == 'busy':
+            # Крестик — отмена: загрузка останавливается, недокачанный
+            # файл удаляется из кэша. Продолжить потом можно только с
+            # начала — так и задумано, это «отменить».
             self._cache_pinned.discard(index)
-            # Остановка — это пауза, а не удаление: уже скачанное
-            # остаётся, и продолжение пойдёт с того же места.
             self.backend.cancel_user_download(doc_id)
-            # Запоминаем остановленное: докачку, которую начал этот
-            # же значок, нельзя заводить заново ни по таймеру, ни по
-            # нажатию Enter. Иначе «отменил» — а через секунду снова
-            # «20% · 2 МБ/с», и кажется, что крестик не работает.
             self._cache_stopped.add(doc_id)
-            print(f"[Кэш] Загрузка остановлена: {doc_id}")
+            print(f"[Кэш] Загрузка отменена и удалена: {doc_id}")
+        elif state == 'paused':
+            # Стрелка у остановленной загрузки — продолжить.
+            self._cache_pinned.add(index)
+            self._cache_stopped.discard(doc_id)
+            self._stop_preload()
+            self.backend.submit_coroutine(
+                self.backend.ensure_cache(
+                    message, workers=config.PARALLEL_WORKERS, resume=True))
+            print(f"[Кэш] Загрузка продолжена: {doc_id}")
         else:
             self._cache_pinned.add(index)
             self._cache_stopped.discard(doc_id)
@@ -4449,6 +4719,64 @@ class MainWindow(QMainWindow):
             return False
         return doc_id in (getattr(pw, '_current_doc_id', None),
                           getattr(pw, '_next_doc_id', None))
+
+    def _on_video_menu(self, pos):
+        """ПКМ по ролику в списке канала: те же действия, что у значка.
+
+        Меню повторяет значок строки, но с понятными подписями: по
+        маленькому значку не все догадаются, что он умеет. Пауза и
+        отмена здесь разные действия — пауза сохраняет скачанное и
+        позволяет продолжить, отмена удаляет недокачанный файл.
+        """
+        row = self.video_list.indexAt(pos).row()
+        index = self._row_index(row) if row >= 0 else None
+        if index is None:
+            return
+        try:
+            message = self.backend.current_messages[index]
+            doc = message.media.document
+        except Exception:
+            return
+        doc_id = getattr(doc, 'id', None)
+        status = self._cache_status(doc_id)
+        state = status[0] if status else 'idle'
+        menu = QMenu(self)
+        menu.addAction('Ролик в списке канала').setEnabled(False)
+        menu.addSeparator()
+        act = {}
+        if state == 'done':
+            act['delete'] = menu.addAction('Удалить из кэша')
+        elif state == 'busy':
+            act['pause'] = menu.addAction('Приостановить загрузку')
+            act['cancel'] = menu.addAction('Отменить и удалить')
+        elif state == 'paused':
+            act['resume'] = menu.addAction('Продолжить загрузку')
+            act['cancel'] = menu.addAction('Отменить и удалить')
+        else:
+            act['download'] = menu.addAction('Скачать в кэш')
+        menu.setStyleSheet(theme.build_style())
+        chosen = menu.exec(self.video_list.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act.get('pause'):
+            self._cache_pinned.discard(index)
+            self._cache_stopped.add(doc_id)
+            self.backend.pause_user_download(doc_id)
+            print(f"[Кэш] Загрузка на паузе: {doc_id}")
+            self._cache_state.pop(doc_id, None)
+            widget = self._cache_rows.get(index)
+            if widget is not None:
+                widget.set_paused()
+            QTimer.singleShot(300, self._refresh_downloads_view)
+            return
+        target = 'idle'
+        if chosen is act.get('resume'):
+            target = 'paused'
+        elif chosen is act.get('cancel'):
+            target = 'busy'
+        elif chosen is act.get('delete'):
+            target = 'done'
+        self._cache_action(index, target)
 
     def eventFilter(self, obj, event):
         """Наведение мыши на список: у строки под курсором виден значок.
