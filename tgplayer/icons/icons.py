@@ -166,16 +166,19 @@ _SMALL_KINDS = ('download', 'downloaded', 'cancel', 'trash')
 # системе координат 24x24 и с подсказкой по толщине штриха.
 def _draw_small(p, kind, color):
     if kind == 'download':
-        # Стрелка вниз в лоток — «скачать в кэш». Рисунок смещён вверх:
-        # в строке списка значок стоит рядом с названием ролика, и от
-        # середины квадрата он висел ниже строки текста.
+        # Стрелка вниз в лоток — «скачать в кэш».
+        #
+        # Рисунок по центру квадрата: раньше он был смещён вверх на две
+        # точки и в круглой подложке кнопки висел выше крестика и
+        # корзины. Теперь все три значка одного размера и стоят на
+        # одной высоте.
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap))
-        p.drawLine(12, 1, 12, 4)
-        p.drawLine(QPointF(9.5, 1.5), QPointF(12, 4))
-        p.drawLine(QPointF(14.5, 1.5), QPointF(12, 4))
-        p.drawLine(QPointF(6.5, 6.5), QPointF(17.5, 6.5))
+        p.drawLine(QPointF(12, 4.5), QPointF(12, 11.5))
+        p.drawLine(QPointF(8.5, 8), QPointF(12, 11.5))
+        p.drawLine(QPointF(15.5, 8), QPointF(12, 11.5))
+        p.drawLine(QPointF(6, 15), QPointF(18, 15))
     elif kind == 'downloaded':
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
