@@ -4332,8 +4332,7 @@ class MainWindow(QMainWindow):
             parts.append(f'на паузе: {paused}')
         parts.append(f'скачано в кэш: {done}')
         view.hint.setText(
-            ' · '.join(parts) + '. ПКМ по строке — меню: перейти к ролику '
-            'на канале, пауза, отмена, удаление.')
+            ' · '.join(parts) + '.')
         view.btn_clear.setEnabled(done > 0)
 
     def _downloads_action(self, entry, action):
