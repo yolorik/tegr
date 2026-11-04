@@ -22,8 +22,8 @@ from PyQt6.QtCore import (
     QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread,
     QTimer, pyqtSignal)
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QFontMetricsF, QIcon, QImage,
-    QKeySequence, QPalette,
+    QAction, QActionGroup, QColor, QFont, QFontMetrics, QFontMetricsF, QIcon,
+    QImage, QKeySequence, QPalette,
     QPainter, QPainterPath, QPen, QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
@@ -1805,6 +1805,13 @@ class DownloadRow(QWidget):
 
     ROW_H = 34
     BTN_W = 26
+    BAR_W = 56
+    # Высота виджета может не совпадать с подложкой выделения: строка
+    # списка добавляет к ней свои поля. Разницу берём из размера,
+    # который задал список (setSizeHint), — он равен полосе выделения.
+    ROW_EXTRA = 2
+    # Отступ значка от правого края, как в строке ролика.
+    ICON_GAP = 10
 
     def __init__(self, entry, on_action, parent=None):
         super().__init__(parent)
@@ -1815,17 +1822,29 @@ class DownloadRow(QWidget):
         self.setMouseTracking(True)
         self.setMinimumHeight(self.ROW_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Fixed)
+                           QSizePolicy.Policy.Preferred)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 3, 6, 3)
         lay.setSpacing(6)
         lay.addStretch(1)
+        # Значок ставим по координатам: подложка выделения выше виджета
+        # на поля строки списка, и раскладка центрировала бы значок по
+        # виджету, то есть выше центра выделения.
         self.badge = DownloadBadge(self)
-        lay.addWidget(self.badge, 0,
-                      Qt.AlignmentFlag.AlignRight
-                      | Qt.AlignmentFlag.AlignVCenter)
+        self.badge.raise_()
+        self._place_badge()
         self.badge.clicked.connect(self._clicked)
         self._refresh_badge()
+
+    def _place_badge(self):
+        self.badge.move(
+            self.width() - self.ICON_GAP - self.BTN_W,
+            (self.height() - self.BTN_W) // 2 + self.ROW_EXTRA // 2)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_badge()
+        self.badge.raise_()
 
     def _refresh_badge(self):
         state = self.entry.get('state') or 'busy'
@@ -1866,39 +1885,56 @@ class DownloadRow(QWidget):
         except Exception:
             color = QColor('#ffffff')
         state = self.entry.get('state')
-        # Состояние — мелким текстом в правом верхнем углу строки, над
-        # полосой: раньше оно рисовалось у нижнего края и налезало на
-        # название.
+        # Размер (у скачанного) или ход (у качающегося) — справа от
+        # названия, по центру строки, как размер в строке ролика.
         if state == 'done':
             sub = str(self.entry.get('size_text') or '')
+            pct = None
         else:
-            pct = int(round(float(self.entry.get('progress') or 0.0) * 100))
+            pct = float(self.entry.get('progress') or 0.0)
             speed = str(self.entry.get('speed_text') or '')
-            sub = f'{pct}% · {speed}' if speed else f'{pct}%'
-        small = QFont(self.font())
-        small.setPixelSize(10)
-        p.setFont(small)
-        sub_rect = self.rect().adjusted(0, 3, -self.BTN_W - 12, 0)
-        p.setPen(QColor(color.red(), color.green(), color.blue(), 150))
-        p.drawText(sub_rect, int(Qt.AlignmentFlag.AlignRight
-                                 | Qt.AlignmentFlag.AlignTop), sub)
+            sub = f'{int(round(pct * 100))}% · {speed}' if speed else \
+                f'{int(round(pct * 100))}%'
 
         font = QFont(self.font())
         font.setPixelSize(13)
         p.setFont(font)
         fm = p.fontMetrics()
-        # Название занимает всю строку, кроме значка и полосы справа;
-        # выравниваем его по центру по вертикали.
-        right = self.BTN_W + 10
+        small = QFont(self.font())
+        small.setPixelSize(10)
+        fm_small = QFontMetrics(small)
+
+        # Справа — значок, слева от него полоса прогресса (только пока
+        # качается), ещё левее — подпись. Ширину подписи считаем свою:
+        # иначе она стояла бы не там, где кончается название.
+        right = self.BTN_W + self.ICON_GAP
         if state == 'busy':
-            right += 70                     # место под полосу прогресса
-        rect = self.rect().adjusted(6, 0, -right, 0)
-        title = str(self.entry.get('name') or '')
-        elided = fm.elidedText(title, Qt.TextElideMode.ElideRight,
-                               rect.width())
+            right += self.BAR_W + 8
+        sub_w = fm_small.horizontalAdvance(sub) + 10
+        # Центр строки по вертикали — тот же, что у значка: выделение
+        # выше виджета на поля строки списка.
+        center_y = (self.height() + self.ROW_EXTRA) // 2
+
+        # Вертикаль считаем по шрифту, а не AlignVCenter: он опускает
+        # текст на спуск ниже центра. Так же строка, как в списке роликов.
+        title_y = center_y - (fm.height() + 1) // 2 + fm.ascent()
+        p.setFont(font)
         p.setPen(color)
-        p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft
-                             | Qt.AlignmentFlag.AlignVCenter), elided)
+        title = str(self.entry.get('name') or '')
+        avail = self.width() - 6 - right - sub_w
+        elided = fm.elidedText(title, Qt.TextElideMode.ElideRight, avail)
+        p.drawText(QPoint(6, title_y), elided)
+
+        # Подпись состояния — справа от названия, мельче и бледнее, а не
+        # у верхнего края: там она стояла над полосой отдельной строкой и
+        # вылезала за подложку. Рисуем ПОСЛЕ установки шрифта и пера,
+        # иначе она уходила тем же цветом, что и фон.
+        p.setFont(small)
+        p.setPen(QColor(color.red(), color.green(), color.blue(), 160))
+        sub_y = center_y - (fm_small.height() + 1) // 2 + fm_small.ascent()
+        sub_x = self.width() - 6 - right
+        p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub), sub_y),
+                   sub)
         p.end()
 
         if state != 'busy':
@@ -4017,16 +4053,19 @@ class MainWindow(QMainWindow):
         return self.main_tabs.count()
 
     def _open_downloads_tab(self):
-        """Переходит на вкладку загрузок, показывая её при необходимости."""
+        """Показывает вкладку загрузок, не переключаясь на неё.
+
+        Раньше нажатие «скачать» в списке само переключало окно на
+        вкладку загрузок: человек выбирал ролики, а его выбрасывало с
+        канала. Теперь вкладка только появляется — перейти на неё можно
+        вручную.
+        """
         try:
             if not self._dl_tab_visible:
                 self._dl_tab_visible = True
                 self.main_tabs.insertTab(
                     self._downloads_tab_index_wanted(),
                     self.downloads_tab, 'Загрузки')
-            index = self._downloads_tab_index()
-            if index >= 0:
-                self.main_tabs.setCurrentIndex(index)
         except Exception as ex:
             print(f"[Кэш] Вкладку загрузок не открыть: {ex}")
 
@@ -4300,12 +4339,10 @@ class MainWindow(QMainWindow):
         if row is not None:
             self._refresh_cache_row(row)
         QTimer.singleShot(300, self._refresh_cache_rows)
-        # Скачивание по кнопке — самое место посмотреть, как идёт:
-        # обновляем вкладку и переключаемся на неё.
+        # Вкладку загрузок держим в актуальном виде, но фокус туда не
+        # уводим: человек остаётся на списке роликов.
+        self._open_downloads_tab()
         QTimer.singleShot(300, self._refresh_downloads_view)
-        if state == 'idle':
-            QTimer.singleShot(
-                300, lambda: self._open_downloads_tab())
 
     def _delete_from_cache(self, doc_id):
         """Удаляет один ролик из кэша, даже если он сейчас играет.
