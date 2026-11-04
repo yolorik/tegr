@@ -23,14 +23,15 @@ from PyQt6.QtCore import (
     QTimer, pyqtSignal)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QFontMetricsF, QIcon, QImage,
-    QKeySequence,
+    QKeySequence, QPalette,
     QPainter, QPainterPath, QPen, QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
     QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSplitter, QStatusBar, QSystemTrayIcon,
+    QProgressBar, QPushButton, QStyle, QStyledItemDelegate,
+    QScrollArea, QSizePolicy, QSplitter, QStatusBar, QStyleOptionViewItem,
+    QSystemTrayIcon,
     QTabWidget, QToolButton, QVBoxLayout, QWidget, QWidgetAction)
 
 from ..core import config, history, log, paths, proxy, theme, updates, utils, version
@@ -1424,6 +1425,81 @@ class CornerConnectionButton(QWidget):
         super().mouseReleaseEvent(event)
 
 
+class RowDelegate(QStyledItemDelegate):
+    """Отрисовка обычных строк списка (заглушки «Загрузка видео...»).
+
+    Qt рисует строку с иконкой так: картинка фиксированного размера
+    ставится к левому краю, а текст выровнен по своей высоте — и текст
+    оказывается заметно ниже картинки. Замерено: строка 50 точек, текст
+    на 27–37, а картинка от 1 до 28. Здесь оба центрируются по высоте
+    строки, поэтому у каналов и у строк без своего виджета всё стоит
+    ровно в середине и с одинаковыми отступами.
+    """
+
+    PAD_X = 10
+
+    def __init__(self, icon_size=28, parent=None):
+        super().__init__(parent)
+        self.icon_size = int(icon_size)
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        return QSize(hint.width(), max(hint.height(), self.icon_size + 14))
+
+    def _icon_start(self):
+        """Откуда начинается картинка от левого края строки.
+
+        Строку рисует стиль с padding из оформления (10 точек слева),
+        и картинка стоит уже за ним. Мы рисуем картинку сами, поэтому
+        отступ берём такой же: иначе она сдвигается влево и упирается
+        в край выделения.
+        """
+        return self.PAD_X + self.PAD_X
+
+    def paint(self, painter, option, index):
+        # Состояние «строка пустая, виджет нарисован поверх» — обычная
+        # отрисовка QListWidget, никаких изменений не нужно.
+        painter.save()
+        try:
+            text = index.data(Qt.ItemDataRole.DisplayRole)
+            icon = index.data(Qt.ItemDataRole.DecorationRole)
+            pm = icon.pixmap(self.icon_size, self.icon_size) if icon else None
+            rect = option.rect
+            # Подложку выделения и наведения рисует стиль, но без
+            # собственного текста: стиль поставил бы его по-своему.
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            opt.text = ''
+            opt.icon = QIcon()
+            opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDecoration
+            style = opt.widget.style() if opt.widget else QApplication.style()
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem,
+                              opt, painter, opt.widget)
+            x = rect.left() + self._icon_start()
+            if pm is not None and not pm.isNull():
+                y = rect.top() + (rect.height() - self.icon_size) // 2
+                painter.drawPixmap(x, y, pm)
+                x += self.icon_size + 10
+            if text:
+                font = QFont(opt.font)
+                painter.setFont(font)
+                fm = painter.fontMetrics()
+                selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+                color = opt.palette.color(
+                    QPalette.ColorGroup.Normal,
+                    QPalette.ColorRole.HighlightedText if selected
+                    else QPalette.ColorRole.Text)
+                painter.setPen(color)
+                avail = rect.right() - self.PAD_X - x
+                elided = fm.elidedText(str(text),
+                                       Qt.TextElideMode.ElideRight, avail)
+                text_y = rect.top() + (rect.height() - fm.height()) // 2 \
+                    + fm.ascent()
+                painter.drawText(QPoint(x, text_y), elided)
+        finally:
+            painter.restore()
+
+
 class DownloadBadge(QToolButton):
     """Значок в правой части строки: скачать в кэш / отменить / удалить.
 
@@ -1482,8 +1558,10 @@ class DownloadBadge(QToolButton):
 class VideoRow(QWidget):
     """Строка списка роликов: название, полоса загрузки и значок кэша.
 
-    Справа от названия — полоса прогресса, когда ролик качается, и
-    значок действия: скачать, остановить, удалить из кэша.
+    Справа — полоса, пока ролик качается, и значок действия (скачать,
+    остановить, удалить из кэша). Отступы строки держим сами:
+    QListWidget::item в оформлении задаёт padding 8 и margin 1, и от
+    них значок уезжал к самому краю и прижимался к тексту.
 
     Название рисуется прямо на строке, а не отдельной надписью QLabel:
     внутри строки списка Qt сжимала такую надпись до нескольких точек,
@@ -1497,7 +1575,11 @@ class VideoRow(QWidget):
     # исчезает, поэтому место под неё держим всегда — иначе название
     # прыгало бы по ширине.
     PROGRESS_W = 56
-    ROW_H = 32
+    # Правый отступ до значка: знак стоит ровно на нём, не впритык.
+    RIGHT_PAD = 12
+    # Правый отступ значка от фона строки.
+    ICON_INSET = 6
+    ROW_H = 34
 
     def __init__(self, text, index, on_action, parent=None):
         super().__init__(parent)
@@ -1510,9 +1592,15 @@ class VideoRow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
+        # Высота задаётся явно: из одного маленького значка Qt берёт
+        # крошечную подсказку по высоте, и строка сжимается до 14 точек.
+        self.setMinimumHeight(self.ROW_H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 3, 6, 3)
-        lay.setSpacing(8)
+        # Поля строки: слева место под текст, справа — отступ значка.
+        lay.setContentsMargins(0, 4, 6, 4)
+        lay.setSpacing(0)
         lay.addStretch(1)                    # место под текст
         self.badge = DownloadBadge(self)
         lay.addWidget(self.badge, 0,
@@ -1548,6 +1636,12 @@ class VideoRow(QWidget):
         self.badge.set_hover(False)
         super().leaveEvent(event)
 
+    def _icon_rect(self):
+        """Место значка: правый край строки, по центру по вертикали."""
+        return QRect(self.width() - self.ICON_INSET - self.BAR_W,
+                     (self.height() - self.BAR_W) // 2,
+                     self.BAR_W, self.BAR_W)
+
     def paintEvent(self, event):
         """Название слева, полоса прогресса — перед значком."""
         p = QPainter(self)
@@ -1556,17 +1650,20 @@ class VideoRow(QWidget):
             color = QColor(theme.theme().get('text') or '#ffffff')
         except Exception:
             color = QColor('#ffffff')
-        p.setPen(color)
         font = QFont(self.font())
         font.setPixelSize(13)
         p.setFont(font)
+        fm = p.fontMetrics()
         # Текст занимает всё, кроме значка и места под полосу справа.
-        right = self.BAR_W + self.PROGRESS_W + 10
-        rect = self.rect().adjusted(6, 0, -right, 0)
-        elided = p.fontMetrics().elidedText(
+        right = self.BAR_W + self.PROGRESS_W + self.ICON_INSET + 14
+        rect = self.rect().adjusted(0, 0, -right, 0)
+        elided = fm.elidedText(
             self.text, Qt.TextElideMode.ElideRight, rect.width())
-        p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft
-                             | Qt.AlignmentFlag.AlignVCenter), elided)
+        # Высоту строки текста центрируем по вертикали вручную:
+        # AlignVCenter с учётом спуска шрифта опускает текст на точку.
+        text_y = (self.height() - fm.height()) // 2 + fm.ascent()
+        p.setPen(color)
+        p.drawText(QPoint(rect.left(), text_y), elided)
         p.end()
         if self._state != 'busy':
             return
@@ -1575,7 +1672,7 @@ class VideoRow(QWidget):
         w = self.PROGRESS_W
         h = self.BAR_H
         # Слева от значка: значок стоит у правого края строки.
-        x = self.width() - w - 6 - self.BAR_W - 6
+        x = self.width() - self.ICON_INSET - self.BAR_W - 8 - w
         y = (self.height() - h) // 2
         try:
             accent = QColor(theme.theme()['accent'])
@@ -1964,6 +2061,7 @@ class MainWindow(QMainWindow):
         # обрезаются с подсказкой, а полоса только съедала высоту снизу.
         self.channel_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.channel_list.setItemDelegate(RowDelegate(28, self.channel_list))
         self.channel_list.currentRowChanged.connect(self.on_channel_selected)
         # ПКМ по каналу: избранное, а в режиме поиска — подписка.
         self.channel_list.setContextMenuPolicy(
@@ -2000,6 +2098,9 @@ class MainWindow(QMainWindow):
             QListWidget.SelectionMode.SingleSelection)
         self.video_list.setUniformItemSizes(False)
         self.video_list.setWordWrap(False)
+        # Заглушки («Загрузка видео...», «Ничего не найдено») тоже
+        # рисуются своим делегатом — с текстом и значком по центру.
+        self.video_list.setItemDelegate(RowDelegate(24, self.video_list))
         # itemActivated срабатывает и на Enter, и на двойной клик.
         self.video_list.itemActivated.connect(self.open_player)
         self.video_list.currentRowChanged.connect(self.on_video_selected)
@@ -2009,6 +2110,8 @@ class MainWindow(QMainWindow):
         # Ролики, которые человек качает вручную: их не вытесняет прелоад
         # и не останавливает его смена строки.
         self._cache_pinned = set()
+        # Документы, которые сейчас качает прелоад (служебные загрузки).
+        self._preload_ids = set()
         self.video_list.viewport().installEventFilter(self)
         # Значки кэша обновляются сами: полоса прогресса должна идти,
         # а галочка появляться, как только файл докачался.
@@ -4102,11 +4205,14 @@ class MainWindow(QMainWindow):
     def _cache_action(self, index, state):
         """Нажали значок строки: скачать, остановить или удалить из кэша.
 
-        state — состояние значка в момент нажатия. Загрузка, начатая
-        здесь, от прелоада отличается: прелоад качает только начало
-        ролика и останавливается, а тут нужен файл целиком. Поэтому
-        ставим отметку в _cache_pinned, и ролик не вытесняется, пока не
-        скачается или пока его не разметят.
+        state — состояние значка в момент нажатия.
+
+        Скачивают здесь только то, что выбрал человек: нажал стрелку —
+        качается этот ролик. Прелоад (служебная докачка начала ролика по
+        выделению) в этот момент останавливается и вычищается: иначе он
+        занимает воркеров и качает ролик, которого человек не просил.
+        Пометка в _cache_pinned нужна, чтобы выделение другой строки
+        снова не запустило прелоад поверх выбранных загрузок.
         """
         try:
             message = self.backend.current_messages[index]
@@ -4125,6 +4231,7 @@ class MainWindow(QMainWindow):
             print(f"[Кэш] Загрузка остановлена: {doc_id}")
         else:
             self._cache_pinned.add(index)
+            self._stop_preload()
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
                     message, workers=config.PARALLEL_WORKERS, resume=True))
@@ -4156,16 +4263,33 @@ class MainWindow(QMainWindow):
             return
         print(f"[Кэш] Удалён из кэша: {doc_id}")
 
-    def _can_preload(self, index):
-        """Можно ли начинать прелоад строки: его не качают вручную.
+    def _stop_preload(self):
+        """Останавливает прелоад-загрузки, не трогая выбранные человеком.
 
-        Найденная причина «скачал, а оно не качается»: выделение строки
-        начинало прелоад, а тот поднимает запись кэша с двумя
-        воркерами. Ручная загрузка потом видела готовую запись и
-        добавляла остальных воркеров, но если прелоад к этому моменту
-        уже упирался в паузу, загрузка так и стояла. Теперь строки,
-        которые качают вручную, прелоад не трогает.
+        Прелоад (докачка начала ролика по выделению строки) — это
+        служебная загрузка. Как только человек начал качать что-то
+        руками, она мешает: занимает воркеров и полосу пропуска. В
+        такой момент она останавливается, а файлы её недокачанного
+        ролика удаляются, чтобы кэш не рос.
         """
+        ids = set(getattr(self, '_preload_ids', ()))
+        if not ids:
+            return
+        self._preload_ids = set()
+        for doc_id in ids:
+            self.backend.discard_download(doc_id)
+        print(f"[Кэш] Прелоад остановлен: {sorted(ids)}")
+
+    def _can_preload(self, index):
+        """Можно ли начинать прелоад строки.
+
+        Прелоад нужен только для быстрого старта по Enter. Если человек
+        уже что-то качает вручную, прелоад не начинается вовсе: он
+        занимал бы воркеров у выбранных загрузок, а ролик, который не
+        просили, всё равно качался бы «сам по себе».
+        """
+        if self._cache_pinned:
+            return False
         return index not in self._cache_pinned
 
     def on_video_selected(self, row):
@@ -4184,18 +4308,43 @@ class MainWindow(QMainWindow):
         if doc.id == self._preload_doc_id:
             return
         if self._preload_doc_id is not None:
-            # Прелоад предыдущей строки останавливаем, но НЕ удаляем: это
-            # была его собственная загрузка, а ручную качалку так обрывать
-            # нельзя — человек нажал «скачать», и файл должен качаться.
-            self.backend.cancel_user_download(self._preload_doc_id)
+            # Уходящую прелоад-загрузку выбрасываем с файлами: она была
+            # служебной и недокачанной, а место на диске занимает.
+            old = self._preload_doc_id
+            self._preload_ids.discard(old)
+            if not self._cache_pinned_id(old) and not self._is_playing(old):
+                self.backend.discard_download(old)
         self._preload_doc_id = doc.id
         if not self._can_preload(index):
             return
         # Прелоад тоже идёт по сообщению: иначе при истёкшей ссылке он
         # молча застрянет, а ролик начнёт играть только с нуля.
+        self._preload_ids.add(doc.id)
         self.backend.submit_coroutine(
             self.backend.ensure_cache(message, workers=config.PRELOAD_WORKERS)
         )
+
+    def _cache_pinned_id(self, doc_id):
+        """Этот ролик человек выбрал скачать вручную?"""
+        try:
+            messages = self.backend.current_messages
+        except Exception:
+            return False
+        for index in self._cache_pinned:
+            if 0 <= index < len(messages):
+                try:
+                    if messages[index].media.document.id == doc_id:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def _is_playing(self, doc_id):
+        pw = self.player_window
+        if pw is None or getattr(pw, '_closed', True):
+            return False
+        return doc_id in (getattr(pw, '_current_doc_id', None),
+                          getattr(pw, '_next_doc_id', None))
 
     def eventFilter(self, obj, event):
         """Наведение мыши на список: у строки под курсором виден значок.
