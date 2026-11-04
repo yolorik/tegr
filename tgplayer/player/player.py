@@ -1541,17 +1541,53 @@ class PlayerWindow(QMainWindow):
             win.adjustSize()
             self._place_window_osd(size=win.size())
             win.show()
-            win.raise_()
+            self._raise_osd_over_owner(win)
             self._osd_timer.start(max(300, int(timeout_ms)))
         except Exception as ex:
             print(f"[OSD] не показалось: {ex}")
 
+    def _raise_osd_over_owner(self, win):
+        """Поднимает подсказку над своим окном, но не над чужими.
+
+        Флага «поверх всех окон» у подсказки нет: с ним она оставалась
+        поверх других программ, если не успевала погаснуть. Вместо него
+        ставим её прямо над окном плеера: выше панели (она тоже над
+        кадром), но в обычном слое — как любое окно этой программы.
+        """
+        try:
+            hwnd = int(win.winId())
+            owner = None
+            if getattr(self, 'pip_window', None) is not None \
+                    and self.pip_window.isVisible():
+                owner = self.pip_window
+            elif self.isVisible() and not self.isMinimized():
+                owner = self
+            if owner is None:
+                # Плеер не на экране (окно свёрнуто) — подсказку не
+                # показываем вовсе: иначе она появляется над чужими
+                # окнами, ради чего и убирался «поверх всех окон».
+                win.hide()
+                return
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, int(owner.winId()), 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            try:
+                win.raise_()
+            except Exception:
+                pass
+
     def _ensure_osd_window(self):
-        """Создаёт окно подсказки один раз: прозрачное, без фокуса."""
+        """Создаёт окно подсказки один раз: прозрачное, без фокуса.
+
+        Флага «поверх всех окон» здесь намеренно нет: с ним подсказка
+        («Канал · скорость», «Пропорции: …») оставалась поверх чужих
+        окон, если не успевала погаснуть. Теперь она стоит поверх
+        своего окна плеера — над панелью управления, как и задумано.
+        """
         if self._osd_window is not None:
             return
         win = QWidget(None, Qt.WindowType.FramelessWindowHint
-                      | Qt.WindowType.WindowStaysOnTopHint
                       | Qt.WindowType.Tool)
         win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         win.setAttribute(

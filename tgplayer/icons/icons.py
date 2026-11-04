@@ -159,7 +159,7 @@ def get_icon(kind):
 
 # Значки, которым нужна своя прорисовка в мелком размере: они стоят на
 # кнопках 24 точки в списке роликов.
-_SMALL_KINDS = ('download', 'downloaded', 'cancel')
+_SMALL_KINDS = ('download', 'downloaded', 'cancel', 'trash')
 
 
 # Общая часть мелких значков: те же фигуры, что рисуются крупно, но в
@@ -170,12 +170,12 @@ def _draw_small(p, kind, color):
         # в строке списка значок стоит рядом с названием ролика, и от
         # середины квадрата он висел ниже строки текста.
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
+        p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap))
-        p.drawLine(12, 2, 12, 9)
-        p.drawLine(8, 6, 12, 9)
-        p.drawLine(16, 6, 12, 9)
-        p.drawLine(6, 11, 18, 11)
+        p.drawLine(12, 1, 12, 7)
+        p.drawLine(QPointF(8.5, 4), QPointF(12, 7))
+        p.drawLine(QPointF(15.5, 4), QPointF(12, 7))
+        p.drawLine(QPointF(6.5, 10), QPointF(17.5, 10))
     elif kind == 'downloaded':
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
@@ -190,6 +190,20 @@ def _draw_small(p, kind, color):
         p.drawEllipse(QRectF(4, 4, 16, 16))
         p.drawLine(QPointF(9.5, 9.5), QPointF(14.5, 14.5))
         p.drawLine(QPointF(14.5, 9.5), QPointF(9.5, 14.5))
+    elif kind == 'trash':
+        # Корзина: «удалить из кэша».
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(4, 6), QPointF(20, 6))
+        p.drawLine(QPointF(9.5, 6), QPointF(9.5, 2.5))
+        p.drawLine(QPointF(14.5, 6), QPointF(14.5, 2.5))
+        p.drawLine(QPointF(9.5, 2.5), QPointF(14.5, 2.5))
+        p.drawLine(QPointF(6, 6), QPointF(7, 21))
+        p.drawLine(QPointF(18, 6), QPointF(17, 21))
+        p.drawLine(QPointF(7, 21), QPointF(17, 21))
+        p.drawLine(QPointF(10, 9.5), QPointF(10.5, 17.5))
+        p.drawLine(QPointF(14, 9.5), QPointF(13.5, 17.5))
 
 
 def _draw_scaled(kind, color, size=24):

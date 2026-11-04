@@ -645,6 +645,92 @@ class TelegramBackend(QObject):
             except Exception:
                 pass
 
+    def cancel_user_download(self, doc_id):
+        """Останавливает загрузку, начатую кнопкой в списке (Qt-поток).
+
+        Отличие от discard_download: файлы остаются на диске. Раньше
+        значок отмены удалял запись кэша целиком, и тут же срабатывал
+        прелоад выбранной строки: он начинал качать заново, ничего не
+        сняв. Получалось «нажал крестик — а он продолжил качать».
+
+        Теперь остановка — это пауза записи: куски в полёте отменяются,
+        уже скачанное лежит на диске, и нажатие на значок загрузки
+        продолжает с того же места.
+        """
+        if self.loop is None or self.loop.is_closed():
+            return
+        self.loop.call_soon_threadsafe(
+            self._pause_download_on_loop, doc_id)
+
+    def forget_cache_entry(self, doc_id):
+        """Забывает готовую запись кэша, не трогая файл (Qt-поток).
+
+        Удаление самого файла — это delete_cached_file; здесь только
+        сама запись (нужно, когда файл уже удалён кем-то снаружи).
+        """
+        if self.loop is not None and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self._forget_on_loop, doc_id)
+        else:
+            self._forget_on_loop(doc_id)
+
+    def is_cached_file(self, doc_id):
+        """Ролик целиком лежит файлом .mp4 в кэше.
+
+        Смотрим именно файл, а не запись self.cache: после «удалить из
+        кэша» запись отбрасывается, а файл от прошлого запуска мог
+        остаться и на диске.
+        """
+        path = os.path.join(config.CACHE_DIR, f'{doc_id}.mp4')
+        try:
+            return os.path.isfile(path)
+        except Exception:
+            return False
+
+    def forget_cache_entry(self, doc_id):
+        """Забывает готовую запись кэша после удаления её файла (Qt-поток).
+
+        Нужно после «удалить из кэша»: запись о готовом файле держит
+        читающий дескриптор, и на Windows файл из-за него нельзя
+        удалить. Закрываем дескриптор и выбрасываем запись — следующий
+        запрос прочитает файл заново.
+        """
+        if self.loop is not None and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self._forget_on_loop, doc_id)
+        else:
+            self._forget_on_loop(doc_id)
+
+    def _forget_on_loop(self, doc_id):
+        e = self.cache.get(doc_id)
+        if e is not None and e.get('complete'):
+            self._close_entry_handles(e)
+            self.cache.pop(doc_id, None)
+
+    def delete_cached_file(self, doc_id):
+        """Удаляет скачанный ролик из кэша целиком (Qt-поток).
+
+        Раньше удаление было только общим («Очистить кэш» в настройках),
+        и один ролик убрать было нельзя. Порядок важен: сначала в
+        потоке бэкенда закрываем дескрипторы записи, потом удаляем файл
+        — занятый на Windows файл не удаляется.
+        """
+        if self.loop is not None and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self._delete_cached_on_loop, doc_id)
+        else:
+            self._delete_cached_on_loop(doc_id)
+
+    def _delete_cached_on_loop(self, doc_id):
+        e = self.cache.get(doc_id)
+        if e is not None:
+            # Запись убираем и из кэша: иначе mpv продолжал бы играть
+            # из файла, который мы только что удалили.
+            e['removed'] = True
+            for t in e.get('tasks', []):
+                if not t.done():
+                    t.cancel()
+            self._close_entry_handles(e)
+            self.cache.pop(doc_id, None)
+        self._remove_cache_files(doc_id)
+
     def discard_download(self, doc_id):
         """Отменить загрузку документа и удалить его файлы кэша (Qt-поток)."""
         if self.loop is None or self.loop.is_closed():

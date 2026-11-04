@@ -1425,11 +1425,12 @@ class CornerConnectionButton(QWidget):
 
 
 class DownloadBadge(QToolButton):
-    """Значок в правой части строки: скачать в кэш / отменить / готово.
+    """Значок в правой части строки: скачать в кэш / отменить / удалить.
 
-    Показывает одно из трёх состояний и сам сообщает, что нажали:
-    пока значок загрузки — просьба скачать, пока крестик — отменить,
-    пока галочка — ничего не делает (ролик уже в кэше, отменять нечего).
+    Показывает состояние ролика и передаёт нажатие наружу:
+    пока загрузка не идёт — стрелка в лоток (скачать),
+    пока качается — крестик (остановить, скачанное остаётся),
+    когда ролик целиком в кэше — корзина (удалить из кэша).
     """
 
     def __init__(self, parent=None):
@@ -1451,20 +1452,26 @@ class DownloadBadge(QToolButton):
         return self._state
 
     def set_state(self, state):
-        """'idle' — можно скачать, 'busy' — качается, 'done' — в кэше."""
+        """'idle' — можно скачать, 'busy' — качается, 'done' — в кэше.
+
+        Подсказку и значок ставим всегда, даже если кнопка скрыта: при
+        наведении она появляется уже готовой, без короткой задержки на
+        смену значка.
+        """
         self._state = state
         if state == 'done':
-            self.setIcon(icons.get_icon('downloaded'))
-            self.setToolTip('Уже в кэше')
-            self.setVisible(True)
+            self.setIcon(icons.get_icon('trash'))
+            self.setToolTip('Удалить из кэша')
         elif state == 'busy':
             self.setIcon(icons.get_icon('cancel'))
-            self.setToolTip('Отменить загрузку в кэш')
-            self.setVisible(True)
+            self.setToolTip('Остановить загрузку в кэш')
         else:
             self.setIcon(icons.get_icon('download'))
             self.setToolTip('Скачать в кэш')
+        if state == 'idle':
             self.setVisible(self._hover)
+        else:
+            self.setVisible(True)
 
     def set_hover(self, on):
         self._hover = bool(on)
@@ -1473,11 +1480,10 @@ class DownloadBadge(QToolButton):
 
 
 class VideoRow(QWidget):
-    """Строка списка роликов: название и состояние кэша справа.
+    """Строка списка роликов: название, полоса загрузки и значок кэша.
 
-    Наведение мыши показывает значок загрузки — до наведения строка
-    выглядит так же, как раньше. Во время загрузки на месте значка
-    тонкая полоса прогресса.
+    Справа от названия — полоса прогресса, когда ролик качается, и
+    значок действия: скачать, остановить, удалить из кэша.
 
     Название рисуется прямо на строке, а не отдельной надписью QLabel:
     внутри строки списка Qt сжимала такую надпись до нескольких точек,
@@ -1487,6 +1493,10 @@ class VideoRow(QWidget):
 
     BAR_W = 26
     BAR_H = 4
+    # Место под полосу прогресса слева от значка: она появляется и
+    # исчезает, поэтому место под неё держим всегда — иначе название
+    # прыгало бы по ширине.
+    PROGRESS_W = 56
     ROW_H = 32
 
     def __init__(self, text, index, on_action, parent=None):
@@ -1518,10 +1528,9 @@ class VideoRow(QWidget):
         self.update()
 
     def _clicked(self):
-        if self._state == 'done':
-            return
+        # 'done' — это уже «удалить из кэша», действие тоже нужно.
         try:
-            self._on_action(self.index, self._state != 'busy')
+            self._on_action(self.index, self._state)
         except Exception as ex:
             print(f"[Кэш] {ex}")
 
@@ -1540,7 +1549,7 @@ class VideoRow(QWidget):
         super().leaveEvent(event)
 
     def paintEvent(self, event):
-        """Название слева, полоса прогресса — на месте значка."""
+        """Название слева, полоса прогресса — перед значком."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         try:
@@ -1551,8 +1560,8 @@ class VideoRow(QWidget):
         font = QFont(self.font())
         font.setPixelSize(13)
         p.setFont(font)
-        # Текст занимает всё, кроме значка справа.
-        right = self.BAR_W + 16
+        # Текст занимает всё, кроме значка и места под полосу справа.
+        right = self.BAR_W + self.PROGRESS_W + 10
         rect = self.rect().adjusted(6, 0, -right, 0)
         elided = p.fontMetrics().elidedText(
             self.text, Qt.TextElideMode.ElideRight, rect.width())
@@ -1563,9 +1572,10 @@ class VideoRow(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w = self.BAR_W
+        w = self.PROGRESS_W
         h = self.BAR_H
-        x = self.width() - w - 6
+        # Слева от значка: значок стоит у правого края строки.
+        x = self.width() - w - 6 - self.BAR_W - 6
         y = (self.height() - h) // 2
         try:
             accent = QColor(theme.theme()['accent'])
@@ -1790,6 +1800,9 @@ class MainWindow(QMainWindow):
         # Загрузка в кэш по значку, и состояние строк при наведении курсора.
         self._cache_rows = {}          # индекс ролика -> VideoRow
         self._cache_state = {}         # doc_id -> ('busy'|'done', доля)
+        # Ролики, которые человек качает вручную: их не вытесняет прелоад
+        # и не останавливает его смена строки.
+        self._cache_pinned = set()
         self.video_list.viewport().installEventFilter(self)
         # Значки кэша обновляются сами: полоса прогресса должна идти,
         # а галочка появляться, как только файл докачался.
@@ -3616,13 +3629,17 @@ class MainWindow(QMainWindow):
         """Состояние кэша ролика: ('done'|'busy', доля) или None.
 
         Смотрим в записи кэша бэкенда: готовая запись — это .mp4 целиком,
-        незавершённая — доля скачанных кусков.
+        незавершённая — доля скачанных кусков. Если записи нет, но файл
+        .mp4 на диске есть (например, кэш остался с прошлого запуска),
+        это тоже «в кэше».
         """
         try:
             e = self.backend.cache.get(doc_id)
         except Exception:
             e = None
         if not e:
+            if self.backend.is_cached_file(doc_id):
+                return ('done', 1.0)
             return None
         try:
             if e.get('complete'):
@@ -3673,28 +3690,68 @@ class MainWindow(QMainWindow):
         # двигаться на глазах. Когда всё стоит, таймер реже.
         self._cache_timer.setInterval(500 if busy else 2000)
 
-    def _cache_action(self, index, download):
-        """Нажали значок строки: скачать ролик в кэш или отменить."""
+    def _cache_action(self, index, state):
+        """Нажали значок строки: скачать, остановить или удалить из кэша.
+
+        state — состояние значка в момент нажатия. Загрузка, начатая
+        здесь, от прелоада отличается: прелоад качает только начало
+        ролика и останавливается, а тут нужен файл целиком. Поэтому
+        ставим отметку в _cache_pinned, и ролик не вытесняется, пока не
+        скачается или пока его не разметят.
+        """
         try:
             message = self.backend.current_messages[index]
             doc = message.media.document
         except Exception:
             return
-        if download:
-            # Вся загрузка идёт через ensure_cache: он открывает файл,
-            # ставит куски в очередь и поднимает воркеры.
+        doc_id = getattr(doc, 'id', None)
+        if state == 'done':
+            self._cache_pinned.discard(index)
+            self._delete_from_cache(doc_id)
+        elif state == 'busy':
+            self._cache_pinned.discard(index)
+            # Остановка — это пауза, а не удаление: уже скачанное
+            # остаётся, и продолжение пойдёт с того же места.
+            self.backend.cancel_user_download(doc_id)
+            print(f"[Кэш] Загрузка остановлена: {doc_id}")
+        else:
+            self._cache_pinned.add(index)
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
                     message, workers=config.PARALLEL_WORKERS, resume=True))
-            print(f"[Кэш] Скачиваю в кэш: {getattr(doc, 'id', '?')}")
-        else:
-            self.backend.discard_download(doc.id)
-            print(f"[Кэш] Загрузка отменена: {getattr(doc, 'id', '?')}")
-        self._cache_state.pop(doc.id, None)
+            print(f"[Кэш] Скачиваю в кэш: {doc_id}")
+        self._cache_state.pop(doc_id, None)
         row = self._cache_rows.get(index)
         if row is not None:
             self._refresh_cache_row(row)
         QTimer.singleShot(300, self._refresh_cache_rows)
+
+    def _delete_from_cache(self, doc_id):
+        """Удаляет один ролик из кэша, даже если он сейчас играет.
+
+        Если ролик играет в открытом плеере, сначала переключаем его на
+        любой другой: удалять файл из-под mpv — это чёрный кадр и
+        ошибки. Если переключить не на что, удаление отменяется, чтобы
+        не оборвать воспроизведение.
+        """
+        try:
+            self.backend.delete_cached_file(doc_id)
+        except Exception as ex:
+            print(f"[Кэш] Удалить не удалось: {ex}")
+            return
+        print(f"[Кэш] Удалён из кэша: {doc_id}")
+
+    def _can_preload(self, index):
+        """Можно ли начинать прелоад строки: его не качают вручную.
+
+        Найденная причина «скачал, а оно не качается»: выделение строки
+        начинало прелоад, а тот поднимает запись кэша с двумя
+        воркерами. Ручная загрузка потом видела готовую запись и
+        добавляла остальных воркеров, но если прелоад к этому моменту
+        уже упирался в паузу, загрузка так и стояла. Теперь строки,
+        которые качают вручную, прелоад не трогает.
+        """
+        return index not in self._cache_pinned
 
     def on_video_selected(self, row):
         # Прелоад начала выбранного ролика, чтобы он стартовал мгновенно.
@@ -3712,8 +3769,13 @@ class MainWindow(QMainWindow):
         if doc.id == self._preload_doc_id:
             return
         if self._preload_doc_id is not None:
-            self.backend.discard_download(self._preload_doc_id)
+            # Прелоад предыдущей строки останавливаем, но НЕ удаляем: это
+            # была его собственная загрузка, а ручную качалку так обрывать
+            # нельзя — человек нажал «скачать», и файл должен качаться.
+            self.backend.cancel_user_download(self._preload_doc_id)
         self._preload_doc_id = doc.id
+        if not self._can_preload(index):
+            return
         # Прелоад тоже идёт по сообщению: иначе при истёкшей ссылке он
         # молча застрянет, а ролик начнёт играть только с нуля.
         self.backend.submit_coroutine(
