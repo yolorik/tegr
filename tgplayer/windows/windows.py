@@ -1776,7 +1776,9 @@ class DownloadsView(QWidget):
         self.btn_clear = QPushButton('Удалить все скачанные')
         self.btn_clear.setToolTip(
             'Удаляет из кэша все готовые ролики, кроме играющего')
-        lay.addWidget(self.btn_clear, 0, Qt.AlignmentFlag.AlignLeft)
+        # Кнопка справа: слева и так начинается список, а действие над
+        # всем кэшем на правом краю не путается со строками загрузок.
+        lay.addWidget(self.btn_clear, 0, Qt.AlignmentFlag.AlignRight)
 
         self._rows = {}              # имя файла -> DownloadRow
         self.empty_label = None
