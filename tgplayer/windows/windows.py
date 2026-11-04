@@ -2313,10 +2313,6 @@ class MainWindow(QMainWindow):
         self._dl_timer = QTimer(self)
         self._dl_timer.setInterval(700)
         self._dl_timer.timeout.connect(self._refresh_downloads_view)
-        # Вкладку загрузок показываем только когда в кэше что-то есть:
-        # пустая вкладка в каждом окне — лишний раздражитель, а появится
-        # она сама, как только что-нибудь скачается.
-        self._dl_tab_visible = False
         self.downloads_tab = QWidget()
         dl_lay = QVBoxLayout(self.downloads_tab)
         dl_lay.setContentsMargins(9, 9, 9, 9)
@@ -2325,6 +2321,10 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName('maintabs')
         self.main_tabs.addTab(splitter, 'Каналы')
+        # Вкладка загрузок есть всегда: раньше она появлялась и
+        # исчезала по наличию записей в кэше, и в момент, когда
+        # загрузка уже шла, её иногда просто не было в окне.
+        self.main_tabs.addTab(self.downloads_tab, 'Загрузки')
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         main_lay.addWidget(self.main_tabs)
         # Ширину списка каналов берём из настроек: человек подбирает её под
@@ -4126,47 +4126,42 @@ class MainWindow(QMainWindow):
         return None
 
     def _sync_downloads_tab(self, entries):
-        """Показывает вкладку загрузок, только когда это нужно.
+        """Вкладка загрузок есть всегда — здесь только обновляем счётчик.
 
-        Пустая вкладка рядом с каналами никого не радует, поэтому она
-        скрыта, пока в кэше ничего нет. Активная загрузка показывает её
-        и сама переключает на себя — человек нажал «скачать» и должен
-        увидеть, что загрузка пошла.
+        Раньше вкладка появлялась и исчезала по наличию записей в кэше,
+        и вкладки «Загрузки» порой не было в момент, когда загрузка уже
+        шла: например, файл удалили, а прелоад тут же завёл новую запись
+        раньше, чем таймер успел пересчитать список. Пустая вкладка
+        безобиднее пропадающей, поэтому она всегда на месте.
         """
-        want = bool(entries)
-        if want and not self._dl_tab_visible:
-            self._dl_tab_visible = True
-            self.main_tabs.insertTab(self._downloads_tab_index_wanted(),
-                                     self.downloads_tab, 'Загрузки')
-        elif not want and self._dl_tab_visible:
-            index = self._downloads_tab_index()
-            if index >= 0:
-                self.main_tabs.removeTab(index)
-            self._dl_tab_visible = False
-            # Ушли с неё удалением последнего файла — возвращаемся к
-            # каналам: пустая вкладка уже убрана, и текущей не осталось.
-            if self.main_tabs.currentIndex() < 0:
-                self.main_tabs.setCurrentIndex(0)
+        try:
+            self.main_tabs.setTabText(
+                self._downloads_tab_index(), self._downloads_tab_title(entries))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _downloads_tab_title(entries):
+        """«Загрузки» с числом активных загрузок на вкладке."""
+        busy = sum(1 for e in entries if e.get('state') == 'busy')
+        paused = sum(1 for e in entries if e.get('state') == 'paused')
+        active = busy + paused
+        return f'Загрузки ({active})' if active else 'Загрузки'
 
     def _downloads_tab_index_wanted(self):
         return self.main_tabs.count()
 
     def _open_downloads_tab(self):
-        """Показывает вкладку загрузок, не переключаясь на неё.
+        """Обновляет заголовок вкладки загрузок, не переключаясь на неё.
 
         Раньше нажатие «скачать» в списке само переключало окно на
         вкладку загрузок: человек выбирал ролики, а его выбрасывало с
-        канала. Теперь вкладка только появляется — перейти на неё можно
-        вручную.
+        канала. Теперь вкладка только обновляется.
         """
         try:
-            if not self._dl_tab_visible:
-                self._dl_tab_visible = True
-                self.main_tabs.insertTab(
-                    self._downloads_tab_index_wanted(),
-                    self.downloads_tab, 'Загрузки')
+            self._refresh_downloads_view()
         except Exception as ex:
-            print(f"[Кэш] Вкладку загрузок не открыть: {ex}")
+            print(f"[Кэш] Вкладку загрузок не обновить: {ex}")
 
     def _on_main_tab_changed(self, index):
         """Переключились на вкладку загрузок — начали их обновлять.

@@ -1172,25 +1172,21 @@ class PlayerWindow(QMainWindow):
         # дольше, чем нужно. Вторая попытка делает _verify_vo сам.
         QTimer.singleShot(1200, lambda: self._verify_vo(gen, 0))
 
-        # Пока пользователь смотрит текущий ролик, тихо начинаем следующий.
-        # Ждём не полной докачки текущего (на файлах в сотни мегабайт это
-        # почти весь фильм, и следующий ролик стартовал с нуля), а запаса
-        # впереди места просмотра: так префетч не отбирает полосу у только
-        # что запущенного видео, но успевает подготовить следующий ролик
-        # к его концу.
+        # Пока пользователь смотрит текущий ролик, следующий качать НЕ
+        # начинаем: два потока загрузки делят полосу, и первый ролик
+        # грузится вдвое медленнее — на медленном канале это видно как
+        # паузы прямо посреди просмотра. Ждём, пока текущий файл не
+        # скачается целиком, и только тогда тихо берёмся за следующий.
         if document is not None and next_doc is not None:
             async def _prefetch():
                 while not self._closed and self._play_gen == gen:
                     cur = self.backend.cache.get(document.id)
-                    if cur is None or cur.get('complete'):
+                    if cur is None:
                         break
-                    if self._buffered_ahead_sec(cur) >= config.PREFETCH_AHEAD_SEC:
+                    if cur.get('complete'):
                         break
-                    if (cur.get('downloaded_bytes', 0) >= config.PREFETCH_MIN_BYTES
-                            and self._duration <= 0):
-                        # Длительность ещё не пришла от mpv — считаем по
-                        # объёму, иначе запас в секундах не посчитать.
-                        break
+                    if cur.get('removed') or cur.get('error'):
+                        return
                     await asyncio.sleep(0.5)
                 if self._closed or self._play_gen != gen:
                     return
@@ -1202,29 +1198,12 @@ class PlayerWindow(QMainWindow):
                         workers=config.PREFETCH_WORKERS,
                         resume=True
                     )
+                    print(f"[Prefetch] Текущий ролик скачан, качаю "
+                          f"следующий: {next_doc.id}")
                 except Exception as ex:
                     print(f"[Prefetch] {ex}")
 
             self.backend.submit_coroutine(_prefetch())
-
-    def _buffered_ahead_sec(self, e):
-        """Сколько секунд видео скачано впереди места просмотра.
-
-        Именно впереди читателя, а не «сколько всего скачано»: загрузка
-        может уйти в хвост за индексом moov, и общий объём тут соврёт.
-        """
-        try:
-            duration = float(self._duration or 0.0)
-            size = float(e.get('size') or 0)
-            if duration <= 0 or size <= 0:
-                return 0.0
-            bytes_per_sec = size / duration
-            played = min(float(self._last_pos or 0.0), duration)
-            pos_byte = int(min(played * bytes_per_sec, size - 1))
-            ahead = self.backend._available_from(e, pos_byte)
-            return ahead / bytes_per_sec
-        except Exception:
-            return 0.0
 
     def on_pos(self, v):
         now = time.monotonic()
