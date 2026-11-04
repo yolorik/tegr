@@ -2276,6 +2276,8 @@ class MainWindow(QMainWindow):
         self._cache_pinned = set()
         # Документы, которые сейчас качает прелоад (служебные загрузки).
         self._preload_ids = set()
+        # Документы, для которых уже спросили название канала в фоне.
+        self._channel_lookups = set()
         # Загрузки, которые человек остановил крестиком. Их не заводят
         # заново ни прелоад, ни возврат к ролику — только новое нажатие
         # на стрелку.
@@ -4244,20 +4246,47 @@ class MainWindow(QMainWindow):
         """Название канала, откуда качается ролик.
 
         Берём из записи кэша (она помнит peer_id и название), а если
-        канала в списке не было — из сообщения, по которому загрузка
-        шла.
+        названия там нет — ищем по сообщению. Когда и так не выходит,
+        спрашиваем Telegram один раз в фоне и дописываем название в
+        запись: иначе вместо канала навсегда оставалось «канал
+        неизвестен».
         """
         title = str(entry.get('peer_title') or '')
         if title:
             return title
         message = entry.get('message')
         peer_id = getattr(message, 'peer_id', None) if message else None
+        peer_id = peer_id or entry.get('peer_id')
         if peer_id is not None:
             try:
                 title = self.backend._peer_title(peer_id)
             except Exception:
                 title = ''
+            if not title and doc_id not in self._channel_lookups:
+                # Один запрос на ролик: таймер вкладки тикает часто, и
+                # без этой метки запросы уходили бы без конца.
+                self._channel_lookups.add(doc_id)
+                try:
+                    self.backend.peer_title_async(
+                        peer_id,
+                        lambda name, d=doc_id, p=peer_id: self._on_peer_title(
+                            d, p, name))
+                except Exception:
+                    pass
         return title or 'канал неизвестен'
+
+    def _on_peer_title(self, doc_id, peer_id, name):
+        """Пришло название канала от Telegram — запоминаем его."""
+        if not name:
+            return
+        try:
+            entry = self.backend.cache.get(doc_id)
+            if entry is not None:
+                entry['peer_title'] = name
+                entry['peer_id'] = peer_id
+        except Exception:
+            pass
+        self._refresh_downloads_view()
 
     def _doc_title(self, doc_id, titles, entry):
         """Название ролика для вкладки загрузок.

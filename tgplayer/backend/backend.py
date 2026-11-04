@@ -1702,25 +1702,99 @@ class TelegramBackend(QObject):
                 or getattr(peer, 'chat_id', None)
                 or getattr(peer, 'user_id', None))
 
-    def _peer_title(self, peer_id):
-        """Название канала по его id, без обращения к сети.
+    def _dialog_title_for_peer(self, peer_id, resolve=True):
+        """Название канала по id, который пришёл в сообщении.
 
-        Ищем в уже прочитанных диалогах: вкладка загрузок и меню по ПКМ
-        должны подписывать ролик каналом сразу, а не ждать запроса к
-        Telegram. Если канала в списке нет (например, ролик играет из
-        папки, которую сейчас не показывают), возвращаем пустую строку —
-        тогда показывается то, что уже известно.
+        Причина, по которой приходилось писать «канал неизвестен»:
+        в сообщении лежит PeerChannel с «сырым» channel_id (999), а у
+        диалога и у самой сущности id — совсем другой, помеченный
+        (-1000000000999). Сравнивать их напрямую нельзя, поэтому
+        переводим сообщение в тот же id, что у диалога, и уж потом
+        ищем название. resolve оставлен ради совместимости: сеть здесь
+        не трогаем никогда, для запроса есть peer_title_async.
         """
+        peer = peer_id
+        if peer is None:
+            return ''
+        try:
+            dialog_id = self.client.get_peer_id(peer) if self.client else None
+        except Exception:
+            dialog_id = None
+        # Ключи, с которыми сравниваем: помеченный вид из get_peer_id и
+        # «сырые» поля канала/чата. Из сырых делаем помеченный вручную —
+        # get_peer_id на них не всегда срабатывает.
+        variants = set()
+        for key in (dialog_id, getattr(peer, 'channel_id', None),
+                    getattr(peer, 'chat_id', None)):
+            if key is None:
+                continue
+            try:
+                key = int(key)
+            except (TypeError, ValueError):
+                continue
+            variants.add(key)
+            # Из «сырого» id делаем помеченный: -100 + id. Отрицательное
+            # или уже помеченное число не трогаем — иначе получается
+            # «-100-1000000000999».
+            if key > 0:
+                variants.add(-1000000000000 - key)
+                variants.add(-key)
         try:
             for dialog in self.dialogs:
-                if getattr(dialog, 'id', None) == peer_id:
-                    return getattr(dialog, 'name', '') or ''
                 entity = getattr(dialog, 'entity', None)
-                if entity is not None and getattr(entity, 'id', None) == peer_id:
-                    return getattr(dialog, 'name', '') or ''
+                cands = set()
+                for cand in (getattr(dialog, 'id', None),
+                             getattr(entity, 'id', None)):
+                    try:
+                        cands.add(int(cand))
+                    except (TypeError, ValueError):
+                        continue
+                ent_id = getattr(entity, 'id', None)
+                try:
+                    ent_id = int(ent_id) if ent_id is not None else None
+                except (TypeError, ValueError):
+                    ent_id = None
+                if ent_id is not None and ent_id > 0:
+                    cands.add(-1000000000000 - ent_id)
+                if cands & variants:
+                    name = getattr(dialog, 'name', '') or ''
+                    if name:
+                        return name
         except Exception:
             pass
         return ''
+
+    def peer_title_async(self, peer_id, callback):
+        """Название канала с запросом к Telegram, ответ через сигнал.
+
+        Вызывать из Qt-потока: сам запрос уходит в цикл бэкенда, а
+        результат возвращается в Qt-поток сигналом — иначе окно бы
+        замирало на время запроса.
+        """
+        if peer_id is None:
+            return
+        title = self._dialog_title_for_peer(peer_id, resolve=False)
+        if title:
+            callback(title)
+            return
+        if self.loop is None or self.loop.is_closed():
+            return
+
+        async def _lookup():
+            try:
+                entity = await self.client.get_entity(peer_id)
+            except Exception as ex:
+                print(f"[Кэш] Канал {peer_id} не найден: {ex}")
+                return
+            name = getattr(entity, 'title', '') or ''
+            if name:
+                callback(name)
+
+        self.submit_coroutine(_lookup())
+
+    def _peer_title(self, peer_id):
+        """Название канала по его id, без обращения к сети."""
+        return self._dialog_title_for_peer(peer_id, resolve=False)
 
     async def load_data(self):
         self.dialogs = []
