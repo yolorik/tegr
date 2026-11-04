@@ -824,6 +824,9 @@ class TelegramBackend(QObject):
         # Скорость обнуляем: иначе на вкладке загрузок у остановленной
         # загрузки продолжала бы висеть последняя цифра.
         e['speed_bytes'] = 0
+        e['speed_bps'] = 0.0
+        e['speed_window_bytes'] = 0
+        e['speed_window_ts'] = time.monotonic()
         print(f"[Кэш] Загрузка остановлена: {doc_id}")
 
     def discard_other_downloads(self, keep_ids):
@@ -2698,7 +2701,13 @@ class TelegramBackend(QObject):
             'queued': queued,
             'active': active,
             'boosted': set(),
+            # Скорость считаем по байтам за последний промежуток, а не
+            # накопительно: накопительная сумма росла бы бесконечно и
+            # показывала «133 МБ/с» вместо настоящей скорости.
             'speed_bytes': 0,
+            'speed_window_bytes': 0,
+            'speed_window_ts': time.monotonic(),
+            'speed_bps': 0.0,
             'last_meta_save': 0.0,
             'started_ts': time.monotonic(),
         }
@@ -3120,7 +3129,20 @@ class TelegramBackend(QObject):
                             # Сразу отдаём данные на диск, чтобы HTTP-ридер
                             # видел их без задержки и не отдавал нули.
                             fh.flush()
-                            e['speed_bytes'] = e.get('speed_bytes', 0) + len(chunk)
+                            # Скорость: копим байты в окне и раз в
+                            # полсекунды пересчитываем. Накопительная
+                            # сумма с прошлого раза выдавала «133 МБ/с»
+                            # вместо настоящей скорости.
+                            e['speed_window_bytes'] = (
+                                e.get('speed_window_bytes', 0) + len(chunk))
+                            now_ts = time.monotonic()
+                            elapsed = now_ts - e.get('speed_window_ts', now_ts)
+                            if elapsed >= 0.5:
+                                e['speed_bps'] = (
+                                    e['speed_window_bytes'] / elapsed)
+                                e['speed_bytes'] = int(e['speed_bps'])
+                                e['speed_window_bytes'] = 0
+                                e['speed_window_ts'] = now_ts
                             # Данные пришли — связь жива.
                             self._bytes_from_telegram += len(chunk)
                             request_offset += len(chunk)

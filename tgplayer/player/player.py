@@ -120,6 +120,10 @@ class PlayerWindow(QMainWindow):
         self._last_pos = 0.0
         self._play_ts = 0.0
         self._closed = False
+        # Когда плеер закрыли. Префетч проверяет это ПОСЛЕ ожидания
+        # окончания загрузки: если окно закрылось, пока он ждал,
+        # следующий ролик качать уже не надо.
+        self._closed_at = None
         self._play_gen = 0
         self._current_doc_id = None
         self._next_doc_id = None
@@ -1189,6 +1193,13 @@ class PlayerWindow(QMainWindow):
                         return
                     await asyncio.sleep(0.5)
                 if self._closed or self._play_gen != gen:
+                    return
+                # Плеер закрыли, пока ждали: следующий ролик НЕ начинаем.
+                # Раньше проверка была только перед ожиданием, а к
+                # моменту старта окно уже закрывалось — и серия, которую
+                # никто не смотрел, качалась после выхода из плеера.
+                if self._closed_at is not None:
+                    print("[Prefetch] Плеер закрыт — следующий ролик не качаю")
                     return
                 try:
                     # Передаём сообщение следующего ролика, чтобы Telethon
@@ -3244,6 +3255,7 @@ class PlayerWindow(QMainWindow):
         self._save_geometry()
 
         self._closed = True
+        self._closed_at = time.monotonic()
         self.progress_timer.stop()
         self.bar_timer.stop()
         self._close_help()
