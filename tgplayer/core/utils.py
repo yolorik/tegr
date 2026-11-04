@@ -30,6 +30,23 @@ def fmt_speed(bps):
     return f"{bps:.0f} Б/с"
 
 
+def fmt_size(size):
+    """Человекочитаемый размер файла: «1,4 ГБ», «812 МБ», «0 Б»."""
+    try:
+        size = float(size)
+    except (TypeError, ValueError):
+        return ''
+    if size <= 0:
+        return '0 Б'
+    if size >= 1024 ** 3:
+        return f"{size / 1024 ** 3:.2f} ГБ"
+    if size >= 1024 ** 2:
+        return f"{size / 1024 ** 2:.0f} МБ"
+    if size >= 1024:
+        return f"{size / 1024:.0f} КБ"
+    return f"{size:.0f} Б"
+
+
 def port_open(host, port, timeout=0.25):
     """Быстрая проверка, слушает ли кто-нибудь порт на localhost."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

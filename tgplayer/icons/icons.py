@@ -172,10 +172,10 @@ def _draw_small(p, kind, color):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap))
-        p.drawLine(12, 1, 12, 7)
-        p.drawLine(QPointF(8.5, 4), QPointF(12, 7))
-        p.drawLine(QPointF(15.5, 4), QPointF(12, 7))
-        p.drawLine(QPointF(6.5, 10), QPointF(17.5, 10))
+        p.drawLine(12, 1, 12, 4)
+        p.drawLine(QPointF(9.5, 1.5), QPointF(12, 4))
+        p.drawLine(QPointF(14.5, 1.5), QPointF(12, 4))
+        p.drawLine(QPointF(6.5, 6.5), QPointF(17.5, 6.5))
     elif kind == 'downloaded':
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,

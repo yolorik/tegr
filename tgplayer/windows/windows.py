@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QStatusBar, QSystemTrayIcon,
-    QToolButton, QVBoxLayout, QWidget, QWidgetAction)
+    QTabWidget, QToolButton, QVBoxLayout, QWidget, QWidgetAction)
 
 from ..core import config, history, log, paths, proxy, theme, updates, utils, version
 from ..core import settings as app_settings
@@ -1590,6 +1590,212 @@ class VideoRow(QWidget):
         p.end()
 
 
+class DownloadsView(QWidget):
+    """Вкладка «Загрузки»: что сейчас качается в кэш и что уже скачано.
+
+    Кнопки «скачать в кэш» в списке роликов видно только по наведению,
+    и понять, что качается, можно было лишь по маленькой полоске в
+    строке. Здесь — отдельный список: у активной загрузки полоса,
+    процент и скорость, у готовых — размер и кнопка удаления.
+
+    Данные приходят снаружи: view только показывает, что ему передали.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('downloadsview')
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self.hint = QLabel('')
+        self.hint.setObjectName('hint')
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+
+        self.list = QListWidget()
+        self.list.setMouseTracking(True)
+        self.list.setSelectionMode(
+            QListWidget.SelectionMode.SingleSelection)
+        self.list.setUniformItemSizes(False)
+        self.list.setWordWrap(False)
+        lay.addWidget(self.list, 1)
+
+        self.btn_clear = QPushButton('Удалить все скачанные')
+        self.btn_clear.setToolTip(
+            'Удаляет из кэша все готовые ролики, кроме играющего')
+        lay.addWidget(self.btn_clear, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._rows = {}              # имя файла -> DownloadRow
+        self.empty_label = None
+        self._show_empty()
+
+    def _show_empty(self):
+        self.list.clear()
+        self._rows = {}
+        item = QListWidgetItem('Сейчас ничего не качается')
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.list.addItem(item)
+
+    def set_entries(self, entries):
+        """Показывает список загрузок.
+
+        entries — список словарей: name, state ('busy'|'done'), progress
+        (доля), size_text, speed_text, doc_id, file.
+        """
+        if not entries:
+            self._show_empty()
+            return
+        names = [e.get('file') or e.get('name') for e in entries]
+        if names != list(self._rows) or self.list.count() != len(names):
+            self.list.clear()
+            self._rows = {}
+            for e in entries:
+                item = QListWidgetItem('')
+                item.setData(Qt.ItemDataRole.UserRole, e.get('file'))
+                item.setSizeHint(QSize(0, DownloadRow.ROW_H))
+                self.list.addItem(item)
+                row = DownloadRow(e, self._on_action)
+                self.list.setItemWidget(item, row)
+                self._rows[e.get('file')] = row
+            return
+        for e in entries:
+            row = self._rows.get(e.get('file'))
+            if row is not None:
+                row.update_entry(e)
+
+    def _on_action(self, entry, action):
+        cb = getattr(self, 'on_action', None)
+        if cb is not None:
+            cb(entry, action)
+
+
+class DownloadRow(QWidget):
+    """Строка загрузки: название, полоса, скорость и кнопка.
+
+    Название рисуется своим paintEvent — так же, как в списке роликов:
+    QLabel внутри строки списка Qt сжимала, и текст обрезался.
+    """
+
+    ROW_H = 34
+    BTN_W = 26
+
+    def __init__(self, entry, on_action, parent=None):
+        super().__init__(parent)
+        self.entry = dict(entry)
+        self._on_action = on_action
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+        self.setMinimumHeight(self.ROW_H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 3, 6, 3)
+        lay.setSpacing(6)
+        lay.addStretch(1)
+        self.badge = DownloadBadge(self)
+        lay.addWidget(self.badge, 0,
+                      Qt.AlignmentFlag.AlignRight
+                      | Qt.AlignmentFlag.AlignVCenter)
+        self.badge.clicked.connect(self._clicked)
+        self._refresh_badge()
+
+    def _refresh_badge(self):
+        state = self.entry.get('state') or 'busy'
+        if state == 'done':
+            self.badge.set_state('done')
+            self.badge.set_hover(True)
+        else:
+            self.badge.set_state('busy')
+
+    def update_entry(self, entry):
+        self.entry = dict(entry)
+        self._refresh_badge()
+        self.update()
+
+    def _clicked(self):
+        state = self.entry.get('state')
+        action = 'delete' if state == 'done' else 'cancel'
+        try:
+            self._on_action(self.entry, action)
+        except Exception as ex:
+            print(f"[Кэш] {ex}")
+
+    def enterEvent(self, event):
+        self.badge.set_hover(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.badge.set_hover(False)
+        if self.entry.get('state') != 'done':
+            self.badge.set_state('busy')
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        try:
+            color = QColor(theme.theme().get('text') or '#ffffff')
+        except Exception:
+            color = QColor('#ffffff')
+        state = self.entry.get('state')
+        # Состояние — мелким текстом в правом верхнем углу строки, над
+        # полосой: раньше оно рисовалось у нижнего края и налезало на
+        # название.
+        if state == 'done':
+            sub = str(self.entry.get('size_text') or '')
+        else:
+            pct = int(round(float(self.entry.get('progress') or 0.0) * 100))
+            speed = str(self.entry.get('speed_text') or '')
+            sub = f'{pct}% · {speed}' if speed else f'{pct}%'
+        small = QFont(self.font())
+        small.setPixelSize(10)
+        p.setFont(small)
+        sub_rect = self.rect().adjusted(0, 3, -self.BTN_W - 12, 0)
+        p.setPen(QColor(color.red(), color.green(), color.blue(), 150))
+        p.drawText(sub_rect, int(Qt.AlignmentFlag.AlignRight
+                                 | Qt.AlignmentFlag.AlignTop), sub)
+
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        # Название занимает всю строку, кроме значка и полосы справа;
+        # выравниваем его по центру по вертикали.
+        right = self.BTN_W + 10
+        if state == 'busy':
+            right += 70                     # место под полосу прогресса
+        rect = self.rect().adjusted(6, 0, -right, 0)
+        title = str(self.entry.get('name') or '')
+        elided = fm.elidedText(title, Qt.TextElideMode.ElideRight,
+                               rect.width())
+        p.setPen(color)
+        p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignVCenter), elided)
+        p.end()
+
+        if state != 'busy':
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = 56, 4
+        x = self.width() - w - 6 - self.BTN_W - 6
+        y = (self.height() - h) // 2
+        try:
+            accent = QColor(theme.theme()['accent'])
+        except Exception:
+            accent = QColor('#5288c1')
+        progress = max(0.0, min(1.0, float(self.entry.get('progress') or 0)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 60))
+        p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
+        p.setBrush(accent)
+        p.drawRoundedRect(QRectF(x, y, max(1.0, w * progress), h),
+                          h / 2, h / 2)
+        p.end()
+
+
 class _RowLabel(QLabel):
     """Пустая надпись-заглушка, чтобы старый код не падал."""
 
@@ -1825,6 +2031,31 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(video_pane)
 
+        # Вкладка загрузок: слева каналы и их список, справа — что
+        # качается и что уже скачано. Сами загрузки и раньше шли, но
+        # видеть их можно было только по полоске в строке ролика, и то
+        # под курсором.
+        self.downloads_view = DownloadsView()
+        self.downloads_view.on_action = self._downloads_action
+        self.btn_clear_downloads = self.downloads_view.btn_clear
+        self.btn_clear_downloads.clicked.connect(self._clear_done_downloads)
+        self._dl_timer = QTimer(self)
+        self._dl_timer.setInterval(700)
+        self._dl_timer.timeout.connect(self._refresh_downloads_view)
+        # Вкладку загрузок показываем только когда в кэше что-то есть:
+        # пустая вкладка в каждом окне — лишний раздражитель, а появится
+        # она сама, как только что-нибудь скачается.
+        self._dl_tab_visible = False
+        self.downloads_tab = QWidget()
+        dl_lay = QVBoxLayout(self.downloads_tab)
+        dl_lay.setContentsMargins(9, 9, 9, 9)
+        dl_lay.addWidget(self.downloads_view)
+
+        self.main_tabs = QTabWidget()
+        self.main_tabs.setObjectName('maintabs')
+        self.main_tabs.addTab(splitter, 'Каналы')
+        self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
+        main_lay.addWidget(self.main_tabs)
         # Ширину списка каналов берём из настроек: человек подбирает её под
         # себя, и после перезапуска она должна остаться прежней.
         #
@@ -1851,8 +2082,6 @@ class MainWindow(QMainWindow):
         # Движение разделителя запоминаем сразу: иначе ширина терялась бы
         # при закрытии программы аварийно (крестик в трей, завершение).
         splitter.splitterMoved.connect(self._on_splitter_moved)
-        main_lay.addWidget(splitter)
-
         self.setCentralWidget(central)
         app_settings.restore_window_geometry(self, 'main_geometry', self._settings_dict())
 
@@ -3625,6 +3854,186 @@ class MainWindow(QMainWindow):
             return index
         return None
 
+    def _sync_downloads_tab(self, entries):
+        """Показывает вкладку загрузок, только когда это нужно.
+
+        Пустая вкладка рядом с каналами никого не радует, поэтому она
+        скрыта, пока в кэше ничего нет. Активная загрузка показывает её
+        и сама переключает на себя — человек нажал «скачать» и должен
+        увидеть, что загрузка пошла.
+        """
+        want = bool(entries)
+        if want and not self._dl_tab_visible:
+            self._dl_tab_visible = True
+            self.main_tabs.insertTab(self._downloads_tab_index_wanted(),
+                                     self.downloads_tab, 'Загрузки')
+        elif not want and self._dl_tab_visible:
+            index = self._downloads_tab_index()
+            if index >= 0:
+                self.main_tabs.removeTab(index)
+            self._dl_tab_visible = False
+            # Ушли с неё удалением последнего файла — возвращаемся к
+            # каналам: пустая вкладка уже убрана, и текущей не осталось.
+            if self.main_tabs.currentIndex() < 0:
+                self.main_tabs.setCurrentIndex(0)
+
+    def _downloads_tab_index_wanted(self):
+        return self.main_tabs.count()
+
+    def _open_downloads_tab(self):
+        """Переходит на вкладку загрузок, показывая её при необходимости."""
+        try:
+            if not self._dl_tab_visible:
+                self._dl_tab_visible = True
+                self.main_tabs.insertTab(
+                    self._downloads_tab_index_wanted(),
+                    self.downloads_tab, 'Загрузки')
+            index = self._downloads_tab_index()
+            if index >= 0:
+                self.main_tabs.setCurrentIndex(index)
+        except Exception as ex:
+            print(f"[Кэш] Вкладку загрузок не открыть: {ex}")
+
+    def _on_main_tab_changed(self, index):
+        """Переключились на вкладку загрузок — начали их обновлять.
+
+        Таймер обновления нужен только пока вкладка на экране: держать
+        его постоянно значит перебирать весь кэш дважды в секунду ради
+        невидимого списка.
+        """
+        if index == self._downloads_tab_index():
+            self._refresh_downloads_view()
+            # Вкладка открыта — загрузки обновляем чаще, полоса должна
+            # идти на глазах.
+            self._dl_timer.setInterval(500)
+            self._dl_timer.start()
+        else:
+            self._dl_timer.stop()
+
+    def _downloads_tab_index(self):
+        try:
+            return self.main_tabs.indexOf(self.downloads_tab)
+        except Exception:
+            return -1
+
+    def _download_entries(self):
+        """Собирает список загрузок: сначала активные, потом скачанные.
+
+        Источник — записи кэша бэкенда. Имя ролика ищем по списку
+        сообщений текущего канала: кэш играющего ролика может быть и не
+        из него, тогда показываем имя файла.
+        """
+        try:
+            cache = dict(self.backend.cache)
+        except Exception:
+            return []
+        titles = {}
+        try:
+            for m in self.backend.current_messages:
+                doc = getattr(getattr(m, 'media', None), 'document', None)
+                if doc is not None:
+                    titles[doc.id] = m
+        except Exception:
+            pass
+        busy, done = [], []
+        for doc_id, e in cache.items():
+            try:
+                if e.get('removed'):
+                    continue
+                name = self._doc_title(doc_id, titles, e)
+                if e.get('complete'):
+                    done.append({
+                        'file': f'{doc_id}.mp4',
+                        'doc_id': doc_id,
+                        'name': name,
+                        'state': 'done',
+                        'size_text': utils.fmt_size(
+                            self._file_size(f'{doc_id}.mp4')),
+                    })
+                    continue
+                total = max(1, int(e.get('piece_count') or 1))
+                got = len(e.get('piece_done') or ())
+                speed = float(e.get('speed_bytes') or 0.0)
+                busy.append({
+                    'file': f'{doc_id}.part',
+                    'doc_id': doc_id,
+                    'name': name,
+                    'state': 'busy',
+                    'progress': got / total,
+                    'speed_text': (utils.fmt_speed(speed)
+                                   if speed > 0 else 'подготовка'),
+                })
+            except Exception:
+                continue
+        return busy + done
+
+    def _doc_title(self, doc_id, titles, entry):
+        """Название ролика для вкладки загрузок."""
+        message = titles.get(doc_id) or entry.get('message')
+        name = ''
+        if message is not None:
+            name = (getattr(getattr(message, 'file', None), 'name', None)
+                    or '')
+            if not name:
+                text = str(getattr(message, 'message', '') or '').strip()
+                name = text.split('\n')[0] if text else ''
+        if not name:
+            name = f'Ролик {doc_id}'
+        return name
+
+    @staticmethod
+    def _file_size(name):
+        try:
+            return os.path.getsize(os.path.join(config.CACHE_DIR, name))
+        except Exception:
+            return 0
+
+    def _refresh_downloads_view(self):
+        try:
+            entries = self._download_entries()
+        except Exception as ex:
+            print(f"[Кэш] Список загрузок не собран: {ex}")
+            return
+        view = self.downloads_view
+        view.set_entries(entries)
+        self._sync_downloads_tab(entries)
+        busy = sum(1 for e in entries if e.get('state') == 'busy')
+        done = len(entries) - busy
+        view.hint.setText(
+            f'Качается: {busy} · скачано в кэш: {done}. '
+            'Крестик останавливает загрузку (скачанное остаётся), '
+            'корзина удаляет ролик из кэша.')
+        view.btn_clear.setEnabled(done > 0)
+
+    def _downloads_action(self, entry, action):
+        """Нажатие значка во вкладке загрузок."""
+        doc_id = entry.get('doc_id')
+        if doc_id is None:
+            return
+        if action == 'delete':
+            self.backend.delete_cached_file(doc_id)
+            print(f"[Кэш] Удалён из кэша: {doc_id}")
+        elif action == 'cancel':
+            self.backend.cancel_user_download(doc_id)
+            print(f"[Кэш] Загрузка остановлена: {doc_id}")
+        QTimer.singleShot(200, self._refresh_downloads_view)
+
+    def _clear_done_downloads(self):
+        """Удаляет все готовые файлы кэша, кроме играющего ролика."""
+        keep = []
+        pw = self.player_window
+        if pw is not None and not getattr(pw, '_closed', True):
+            for attr in ('_current_doc_id', '_next_doc_id'):
+                doc_id = getattr(pw, attr, None)
+                if doc_id is not None:
+                    keep.append(doc_id)
+        try:
+            self.backend.clear_cache(keep)
+        except Exception as ex:
+            print(f"[Кэш] Очистка не удалась: {ex}")
+        self.set_status('Кэш очищен')
+        QTimer.singleShot(300, self._refresh_downloads_view)
+
     def _cache_status(self, doc_id):
         """Состояние кэша ролика: ('done'|'busy', доля) или None.
 
@@ -3725,6 +4134,12 @@ class MainWindow(QMainWindow):
         if row is not None:
             self._refresh_cache_row(row)
         QTimer.singleShot(300, self._refresh_cache_rows)
+        # Скачивание по кнопке — самое место посмотреть, как идёт:
+        # обновляем вкладку и переключаемся на неё.
+        QTimer.singleShot(300, self._refresh_downloads_view)
+        if state == 'idle':
+            QTimer.singleShot(
+                300, lambda: self._open_downloads_tab())
 
     def _delete_from_cache(self, doc_id):
         """Удаляет один ролик из кэша, даже если он сейчас играет.
