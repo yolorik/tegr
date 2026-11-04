@@ -1962,18 +1962,24 @@ class DownloadRow(QWidget):
         except Exception:
             color = QColor('#ffffff')
         state = self.entry.get('state')
-        # Размер (у скачанного), ход или «на паузе» — справа от
-        # названия, по центру строки, как размер в строке ролика.
+        # Справа от названия — две подписи одна под другой: объём
+        # («812 МБ из 2,4 ГБ»), а под ним скорость у качающейся загрузки.
+        # Раньше там стоял только процент и МБ/с, и было непонятно,
+        # сколько уже есть и сколько ещё качать.
+        size_text = str(self.entry.get('size_text') or '')
+        speed_text = ''
         if state == 'done':
-            sub = str(self.entry.get('size_text') or '')
+            sub = size_text
         elif state == 'paused':
             pct = float(self.entry.get('progress') or 0.0)
             sub = f'на паузе · {int(round(pct * 100))}%'
+            speed_text = size_text
         else:
             pct = float(self.entry.get('progress') or 0.0)
-            speed = str(self.entry.get('speed_text') or '')
-            sub = f'{int(round(pct * 100))}% · {speed}' if speed else \
-                f'{int(round(pct * 100))}%'
+            sub = f'{int(round(pct * 100))}%'
+            speed_text = str(self.entry.get('speed_text') or '')
+            if size_text:
+                sub = f'{sub} · {size_text}'
 
         font = QFont(self.font())
         font.setPixelSize(13)
@@ -1984,13 +1990,14 @@ class DownloadRow(QWidget):
         fm_small = QFontMetrics(small)
 
         # Справа — значок, слева от него полоса прогресса (пока идёт
-        # загрузка или она на паузе), ещё левее — подпись. Ширину
-        # подписи считаем свою: иначе она стояла бы не там, где
+        # загрузка или она на паузе), ещё левее — подписи. Ширину
+        # подписей считаем свою: иначе они стояли бы не там, где
         # кончается название.
         right = self.BTN_W + self.ICON_GAP
         if state in ('busy', 'paused'):
             right += self.BAR_W + 8
-        sub_w = fm_small.horizontalAdvance(sub) + 10
+        sub_w = max(fm_small.horizontalAdvance(sub),
+                    fm_small.horizontalAdvance(speed_text)) + 10
         # Центр строки по вертикали — тот же, что у значка: выделение
         # выше виджета на поля строки списка.
         center_y = (self.height() + self.ROW_EXTRA) // 2
@@ -2021,12 +2028,18 @@ class DownloadRow(QWidget):
             chan_y = block_top + fm.height() + line_gap + fm_small.ascent()
             p.drawText(QPoint(6, chan_y), chan_elided)
 
-        # Подпись состояния — справа от названия, по центру строки.
+        # Подписи справа — тоже блоком по центру строки: объём сверху,
+        # скорость под ним. Рисуем после установки шрифта и пера.
         p.setPen(QColor(color.red(), color.green(), color.blue(), 170))
-        sub_y = center_y - (fm_small.height() + 1) // 2 + fm_small.ascent()
         sub_x = self.width() - 6 - right
-        p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub), sub_y),
-                   sub)
+        sub_top = center_y - fm_small.height() // 2
+        p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub),
+                          sub_top + fm_small.ascent()), sub)
+        if speed_text:
+            p.setPen(QColor(color.red(), color.green(), color.blue(), 210))
+            speed_y = sub_top + fm_small.height() + fm_small.ascent()
+            p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(speed_text),
+                              speed_y), speed_text)
         p.end()
 
         if state not in ('busy', 'paused'):
@@ -4230,14 +4243,23 @@ class MainWindow(QMainWindow):
                 total = max(1, int(e.get('piece_count') or 1))
                 got = len(e.get('piece_done') or ())
                 speed = float(e.get('speed_bytes') or 0.0)
+                # Сколько байт уже на диске и сколько всего: раньше в
+                # подписи стоял только процент и скорость, и понять,
+                # далеко ли до конца файла, было нельзя.
+                size = int(e.get('size') or 0)
+                have = int(e.get('downloaded_bytes') or 0)
+                size_text = (f'{utils.fmt_size(have)} из '
+                             f'{utils.fmt_size(size)}') if size else ''
+                speed_text = (utils.fmt_speed(speed) if speed > 0
+                              else 'подготовка')
                 if e.get('paused'):
                     paused.append(dict(base, state='paused',
-                                       progress=got / total))
+                                       progress=got / total,
+                                       size_text=size_text))
                     continue
                 busy.append(dict(
                     base, state='busy', progress=got / total,
-                    speed_text=(utils.fmt_speed(speed)
-                                if speed > 0 else 'подготовка')))
+                    size_text=size_text, speed_text=speed_text))
             except Exception:
                 continue
         return busy + paused + done
