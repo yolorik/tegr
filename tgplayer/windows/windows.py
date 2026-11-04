@@ -1605,9 +1605,11 @@ class VideoRow(QWidget):
         self.setMouseTracking(True)
         # Высота задаётся явно: из одного маленького значка Qt берёт
         # крошечную подсказку по высоте, и строка сжимается до 14 точек.
+        # Только минимум: строку может растянуть подложка (у неё есть
+        # поля), и жёсткая высота потом не совпадала с ней.
         self.setMinimumHeight(self.ROW_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Fixed)
+                           QSizePolicy.Policy.Preferred)
         lay = QHBoxLayout(self)
         # Поля строки: слева место под текст, справа 10 + рамка подложки —
         # значок не должен подходить к самому краю, иначе его срезает

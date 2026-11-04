@@ -374,8 +374,13 @@ QListWidget, QListView {{
     background: {TG_BG_DEEP}; border: none; border-radius: 10px;
     outline: none; padding: 4px;
 }}
+/* Поля строки нулевые: у строк со своим виджетом Qt ставит виджет на
+   место СОДЕРЖИМОГО строки, то есть сдвигает его на левое и верхнее
+   поле (8 и 10 точек). Виджет выходил ниже подложки на 9 точек и
+   оказывался бы вне её, а при обычной высоте строки подложка была бы
+   выше текста. Отступы рисует сам виджет строки (см. VideoRow). */
 QListWidget::item {{
-    border-radius: 8px; padding: 8px 10px; margin: 1px 2px;
+    border-radius: 8px; padding: 0px; margin: 1px 2px;
 }}
 QListWidget::item:hover {{ background: {TG_HOVER}; }}
 QListWidget::item:selected {{ background: {TG_SELECT}; color: #ffffff; }}
