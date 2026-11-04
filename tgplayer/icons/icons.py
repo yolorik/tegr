@@ -105,13 +105,18 @@ def get_icon(kind):
             p.drawEllipse(QPoint(5, y), 2, 2)
     elif kind == 'download':
         # Стрелка вниз в лоток — «скачать в кэш».
+        #
+        # Рисунок поднят выше середины: в строке списка значок стоит
+        # рядом с названием ролика, а не по центру строки, и от середины
+        # квадрата он висел ниже текста. Теперь центр рисунка — примерно
+        # на уровне середины строки текста.
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap))
-        p.drawLine(12, 4, 12, 15)
-        p.drawLine(8, 11, 12, 15)
-        p.drawLine(16, 11, 12, 15)
-        p.drawLine(5, 18, 19, 18)
+        p.drawLine(12, 3, 12, 10)
+        p.drawLine(8, 7, 12, 10)
+        p.drawLine(16, 7, 12, 10)
+        p.drawLine(5, 11, 19, 11)
     elif kind == 'downloaded':
         # Галочка в круге: ролик уже в кэше.
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -139,8 +144,71 @@ def get_icon(kind):
         p.drawLine(17, 7, 7, 17)
     p.end()
     icon = QIcon(pm)
+    if kind in _SMALL_KINDS:
+        # Кнопки в списке роликов — 24 точки. Один снимок на 96 точек,
+        # уменьшенный до 18, отдаётся сглаженным размытием, и мелкие
+        # заливки вроде полоски лотка тают наполовину. Поэтому для этих
+        # значков в маленьком размере рисунок рисуется заново прямо
+        # в нём; крупный снимок остаётся для панели и меню.
+        icon = QIcon(_draw_scaled(kind, color))
+        for s in (24, 36, 48, 96):
+            icon.addPixmap(_draw_scaled(kind, color, s))
     _ICON_CACHE[key] = icon
     return icon
+
+
+# Значки, которым нужна своя прорисовка в мелком размере: они стоят на
+# кнопках 24 точки в списке роликов.
+_SMALL_KINDS = ('download', 'downloaded', 'cancel')
+
+
+# Общая часть мелких значков: те же фигуры, что рисуются крупно, но в
+# системе координат 24x24 и с подсказкой по толщине штриха.
+def _draw_small(p, kind, color):
+    if kind == 'download':
+        # Стрелка вниз в лоток — «скачать в кэш». Рисунок смещён вверх:
+        # в строке списка значок стоит рядом с названием ролика, и от
+        # середины квадрата он висел ниже строки текста.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(12, 2, 12, 9)
+        p.drawLine(8, 6, 12, 9)
+        p.drawLine(16, 6, 12, 9)
+        p.drawLine(6, 11, 18, 11)
+    elif kind == 'downloaded':
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawEllipse(QRectF(4, 4, 16, 16))
+        p.drawLine(QPointF(8.5, 12), QPointF(11, 14.5))
+        p.drawLine(QPointF(11, 14.5), QPointF(16, 9.5))
+    elif kind == 'cancel':
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawEllipse(QRectF(4, 4, 16, 16))
+        p.drawLine(QPointF(9.5, 9.5), QPointF(14.5, 14.5))
+        p.drawLine(QPointF(14.5, 9.5), QPointF(9.5, 14.5))
+
+
+def _draw_scaled(kind, color, size=24):
+    """Тот же рисунок, нарисованный сразу в размере size точек.
+
+    Рисунок описан в системе координат 24x24, поэтому масштабируем её.
+    Повторного уменьшения нет: штрихи выходят ровными, потому что
+    рисуются в конечном размере.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(size / 24.0, size / 24.0)
+    try:
+        _draw_small(p, kind, color)
+    finally:
+        p.end()
+    return pm
 
 
 def gear_icon(color=None):
