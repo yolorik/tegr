@@ -22,7 +22,8 @@ from PyQt6.QtCore import (
     QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread,
     QTimer, pyqtSignal)
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QFontMetricsF, QIcon, QImage, QKeySequence,
+    QAction, QActionGroup, QColor, QFont, QFontMetricsF, QIcon, QImage,
+    QKeySequence,
     QPainter, QPainterPath, QPen, QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFormLayout,
@@ -1423,6 +1424,173 @@ class CornerConnectionButton(QWidget):
         super().mouseReleaseEvent(event)
 
 
+class DownloadBadge(QToolButton):
+    """Значок в правой части строки: скачать в кэш / отменить / готово.
+
+    Показывает одно из трёх состояний и сам сообщает, что нажали:
+    пока значок загрузки — просьба скачать, пока крестик — отменить,
+    пока галочка — ничего не делает (ролик уже в кэше, отменять нечего).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setIconSize(QSize(18, 18))
+        self.setFixedSize(26, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(
+            'QToolButton { background: transparent; border: none;'
+            ' border-radius: 13px; padding: 0px; }'
+            'QToolButton:hover { background: rgba(255, 255, 255, 0.12); }')
+        self._state = 'idle'
+        self._hover = False
+        self.set_state('idle')
+        self.hide()
+
+    def state(self):
+        return self._state
+
+    def set_state(self, state):
+        """'idle' — можно скачать, 'busy' — качается, 'done' — в кэше."""
+        self._state = state
+        if state == 'done':
+            self.setIcon(icons.get_icon('downloaded'))
+            self.setToolTip('Уже в кэше')
+            self.setVisible(True)
+        elif state == 'busy':
+            self.setIcon(icons.get_icon('cancel'))
+            self.setToolTip('Отменить загрузку в кэш')
+            self.setVisible(True)
+        else:
+            self.setIcon(icons.get_icon('download'))
+            self.setToolTip('Скачать в кэш')
+            self.setVisible(self._hover)
+
+    def set_hover(self, on):
+        self._hover = bool(on)
+        if self._state == 'idle':
+            self.setVisible(self._hover)
+
+
+class VideoRow(QWidget):
+    """Строка списка роликов: название и состояние кэша справа.
+
+    Наведение мыши показывает значок загрузки — до наведения строка
+    выглядит так же, как раньше. Во время загрузки на месте значка
+    тонкая полоса прогресса.
+
+    Название рисуется прямо на строке, а не отдельной надписью QLabel:
+    внутри строки списка Qt сжимала такую надпись до нескольких точек,
+    и текст обрезался сверху и снизу. Своя отрисовка от этого не
+    зависит.
+    """
+
+    BAR_W = 26
+    BAR_H = 4
+    ROW_H = 32
+
+    def __init__(self, text, index, on_action, parent=None):
+        super().__init__(parent)
+        self.index = index
+        self.text = text
+        self._on_action = on_action
+        self._progress = 0.0
+        self._state = 'idle'
+        # Строка прозрачна: фон и выделение рисует сам список.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 3, 6, 3)
+        lay.setSpacing(8)
+        lay.addStretch(1)                    # место под текст
+        self.badge = DownloadBadge(self)
+        lay.addWidget(self.badge, 0,
+                      Qt.AlignmentFlag.AlignRight
+                      | Qt.AlignmentFlag.AlignVCenter)
+        self.badge.clicked.connect(self._clicked)
+        # Совместимость с прежним кодом: у строки был label.
+        self.label = _RowLabel(self)
+        self.label.hide()
+
+    def set_text(self, text):
+        self.text = text
+        self.update()
+
+    def _clicked(self):
+        if self._state == 'done':
+            return
+        try:
+            self._on_action(self.index, self._state != 'busy')
+        except Exception as ex:
+            print(f"[Кэш] {ex}")
+
+    def set_state(self, state, progress=0.0):
+        self._state = state
+        self._progress = max(0.0, min(1.0, float(progress or 0.0)))
+        self.badge.set_state(state)
+        self.update()
+
+    def enterEvent(self, event):
+        self.badge.set_hover(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.badge.set_hover(False)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        """Название слева, полоса прогресса — на месте значка."""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        try:
+            color = QColor(theme.theme().get('text') or '#ffffff')
+        except Exception:
+            color = QColor('#ffffff')
+        p.setPen(color)
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        p.setFont(font)
+        # Текст занимает всё, кроме значка справа.
+        right = self.BAR_W + 16
+        rect = self.rect().adjusted(6, 0, -right, 0)
+        elided = p.fontMetrics().elidedText(
+            self.text, Qt.TextElideMode.ElideRight, rect.width())
+        p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignVCenter), elided)
+        p.end()
+        if self._state != 'busy':
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w = self.BAR_W
+        h = self.BAR_H
+        x = self.width() - w - 6
+        y = (self.height() - h) // 2
+        try:
+            accent = QColor(theme.theme()['accent'])
+        except Exception:
+            accent = QColor('#5288c1')
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 60))
+        p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
+        p.setBrush(accent)
+        p.drawRoundedRect(QRectF(x, y, max(1.0, w * self._progress), h),
+                          h / 2, h / 2)
+        p.end()
+
+
+class _RowLabel(QLabel):
+    """Пустая надпись-заглушка, чтобы старый код не падал."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setVisible(False)
+
+    def setText(self, text):
+        self.setVisible(False)
+
+
 class MainWindow(QMainWindow):
     # Результат проверки обновлений из фонового потока.
     #
@@ -1608,9 +1776,27 @@ class MainWindow(QMainWindow):
         video_lay.addLayout(video_bar)
 
         self.video_list = QListWidget()
+        # Строка списка — свой виджет (название и значок загрузки). Из-за
+        # этого нажатие по значку не должно «активировать» ролик: гасим
+        # активацию по одинарному клику, Enter и двойной клик работают.
+        self.video_list.setMouseTracking(True)
+        self.video_list.setSelectionMode(
+            QListWidget.SelectionMode.SingleSelection)
+        self.video_list.setUniformItemSizes(False)
+        self.video_list.setWordWrap(False)
         # itemActivated срабатывает и на Enter, и на двойной клик.
         self.video_list.itemActivated.connect(self.open_player)
         self.video_list.currentRowChanged.connect(self.on_video_selected)
+        # Загрузка в кэш по значку, и состояние строк при наведении курсора.
+        self._cache_rows = {}          # индекс ролика -> VideoRow
+        self._cache_state = {}         # doc_id -> ('busy'|'done', доля)
+        self.video_list.viewport().installEventFilter(self)
+        # Значки кэша обновляются сами: полоса прогресса должна идти,
+        # а галочка появляться, как только файл докачался.
+        self._cache_timer = QTimer(self)
+        self._cache_timer.setInterval(2000)
+        self._cache_timer.timeout.connect(self._refresh_cache_rows)
+        self._cache_timer.start()
         video_lay.addWidget(self.video_list, 1)
 
         # Кнопка догрузки стоит под списком, а не строкой внутри: строка
@@ -3379,6 +3565,7 @@ class MainWindow(QMainWindow):
             return
 
         self._list_has_videos = True
+        self._cache_rows = {}
         for i, message, title in rows:
             mark = ''
             extra = ''
@@ -3397,9 +3584,15 @@ class MainWindow(QMainWindow):
                     extra = self._video_suffix(attr, doc or info_doc)
             except Exception:
                 pass
-            item = QListWidgetItem(mark + title + extra)
+            # Высота строки одна для всех: виджет в ней, а не картинка.
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
+            item.setSizeHint(QSize(0, VideoRow.ROW_H))
             self.video_list.addItem(item)
+            row = VideoRow(mark + title + extra, i, self._cache_action)
+            self.video_list.setItemWidget(item, row)
+            self._cache_rows[i] = row
+            self._refresh_cache_row(row)
 
     def _row_index(self, row):
         """Индекс ролика в current_messages по номеру строки списка.
@@ -3418,6 +3611,90 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self.backend.current_messages):
             return index
         return None
+
+    def _cache_status(self, doc_id):
+        """Состояние кэша ролика: ('done'|'busy', доля) или None.
+
+        Смотрим в записи кэша бэкенда: готовая запись — это .mp4 целиком,
+        незавершённая — доля скачанных кусков.
+        """
+        try:
+            e = self.backend.cache.get(doc_id)
+        except Exception:
+            e = None
+        if not e:
+            return None
+        try:
+            if e.get('complete'):
+                return ('done', 1.0)
+            if e.get('removed') or e.get('error'):
+                return None
+            total = max(1, int(e.get('piece_count') or 1))
+            done = len(e.get('piece_done') or ())
+            return ('busy', done / total)
+        except Exception:
+            return None
+
+    def _refresh_cache_row(self, row):
+        """Ставит значку строки то состояние, что сейчас у кэша."""
+        try:
+            message = self.backend.current_messages[row.index]
+            doc = message.media.document
+        except Exception:
+            row.set_state('idle')
+            return
+        status = self._cache_status(doc.id)
+        self._cache_state[doc.id] = status
+        if status is None:
+            row.set_state('idle')
+        else:
+            row.set_state(status[0], status[1])
+
+    def _refresh_cache_rows(self):
+        """Обновляет значки всех строк — по таймеру, пока идёт загрузка."""
+        rows = list(getattr(self, '_cache_rows', {}).values())
+        busy = False
+        for row in rows:
+            try:
+                message = self.backend.current_messages[row.index]
+                doc = message.media.document
+            except Exception:
+                continue
+            status = self._cache_status(doc.id)
+            if status is not None:
+                busy = busy or status[0] == 'busy'
+                if self._cache_state.get(doc.id) != status:
+                    self._cache_state[doc.id] = status
+                    row.set_state(status[0], status[1])
+            elif self._cache_state.get(doc.id) is not None:
+                self._cache_state[doc.id] = None
+                row.set_state('idle')
+        # Пока хоть одна строка качается — проверяем чаще: полоса должна
+        # двигаться на глазах. Когда всё стоит, таймер реже.
+        self._cache_timer.setInterval(500 if busy else 2000)
+
+    def _cache_action(self, index, download):
+        """Нажали значок строки: скачать ролик в кэш или отменить."""
+        try:
+            message = self.backend.current_messages[index]
+            doc = message.media.document
+        except Exception:
+            return
+        if download:
+            # Вся загрузка идёт через ensure_cache: он открывает файл,
+            # ставит куски в очередь и поднимает воркеры.
+            self.backend.submit_coroutine(
+                self.backend.ensure_cache(
+                    message, workers=config.PARALLEL_WORKERS, resume=True))
+            print(f"[Кэш] Скачиваю в кэш: {getattr(doc, 'id', '?')}")
+        else:
+            self.backend.discard_download(doc.id)
+            print(f"[Кэш] Загрузка отменена: {getattr(doc, 'id', '?')}")
+        self._cache_state.pop(doc.id, None)
+        row = self._cache_rows.get(index)
+        if row is not None:
+            self._refresh_cache_row(row)
+        QTimer.singleShot(300, self._refresh_cache_rows)
 
     def on_video_selected(self, row):
         # Прелоад начала выбранного ролика, чтобы он стартовал мгновенно.
@@ -3442,6 +3719,24 @@ class MainWindow(QMainWindow):
         self.backend.submit_coroutine(
             self.backend.ensure_cache(message, workers=config.PRELOAD_WORKERS)
         )
+
+    def eventFilter(self, obj, event):
+        """Наведение мыши на список: у строки под курсором виден значок.
+
+        Сама строка тоже ловит свой enterEvent, но между строками
+        остаётся полотно списка: без этой проверки значок не появлялся
+        при переходе с одной строки на другую.
+        """
+        if obj is getattr(self.video_list, 'viewport', lambda: None)():
+            t = event.type()
+            if t == QEvent.Type.MouseMove:
+                row = self.video_list.indexAt(event.position().toPoint()).row()
+                for i, r in getattr(self, '_cache_rows', {}).items():
+                    r.badge.set_hover(i == row)
+            elif t == QEvent.Type.Leave:
+                for r in getattr(self, '_cache_rows', {}).values():
+                    r.badge.set_hover(False)
+        return super().eventFilter(obj, event)
 
     def open_player(self, item):
         messages = self.backend.current_messages

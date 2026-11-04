@@ -103,6 +103,31 @@ def get_icon(kind):
         for y in (7, 12, 17):
             p.drawRect(9, y - 1, 11, 2)
             p.drawEllipse(QPoint(5, y), 2, 2)
+    elif kind == 'download':
+        # Стрелка вниз в лоток — «скачать в кэш».
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(12, 4, 12, 15)
+        p.drawLine(8, 11, 12, 15)
+        p.drawLine(16, 11, 12, 15)
+        p.drawLine(5, 18, 19, 18)
+    elif kind == 'downloaded':
+        # Галочка в круге: ролик уже в кэше.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawEllipse(QRectF(3, 3, 18, 18))
+        p.drawLine(8, 12, 11, 15)
+        p.drawLine(11, 15, 17, 9)
+    elif kind == 'cancel':
+        # Крестик в круге: отменить загрузку в кэш.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawEllipse(QRectF(3, 3, 18, 18))
+        p.drawLine(9, 9, 15, 15)
+        p.drawLine(15, 9, 9, 15)
     elif kind == 'close':
         # Крестик рисуем линиями, а не буквой «✕»: текст на кнопке в
         # стиле панели окрашивался в цвет фона, и кнопка выглядела пустой.
