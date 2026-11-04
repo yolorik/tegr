@@ -1515,10 +1515,16 @@ class DownloadBadge(QToolButton):
         self.setFixedSize(26, 26)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Подложка только по наведению и ровно по размеру кнопки. Раньше
+        # ширина не задавалась, и под правило padding: 0px попадала ещё
+        # и рамка: подложка выходила шире кнопки (52 против 26 точек) и
+        # со сдвигом — в строке это выглядело как «кружок уплыл».
         self.setStyleSheet(
             'QToolButton { background: transparent; border: none;'
-            ' border-radius: 13px; padding: 0px; }'
-            'QToolButton:hover { background: rgba(255, 255, 255, 0.12); }')
+            ' padding: 0px; }'
+            'QToolButton:hover {'
+            ' background: rgba(255, 255, 255, 0.12);'
+            ' border-radius: 13px; }')
         self._state = 'idle'
         self._hover = False
         self.set_state('idle')
@@ -1575,10 +1581,15 @@ class VideoRow(QWidget):
     # исчезает, поэтому место под неё держим всегда — иначе название
     # прыгало бы по ширине.
     PROGRESS_W = 56
+    # Левый отступ названия. Рамка подложки — 1 точка, при клипании
+    # виджета она тоже попадает в кадр, поэтому считаем её.
+    TEXT_LEFT = 10
     # Правый отступ до значка: знак стоит ровно на нём, не впритык.
     RIGHT_PAD = 12
-    # Правый отступ значка от фона строки.
-    ICON_INSET = 6
+    # Правый отступ значка от фона строки. 10, а не 6: полоса прокрутки
+    # при наведении накрывает край списка, и значок у самого края
+    # обрезался ею.
+    ICON_INSET = 10
     ROW_H = 34
 
     def __init__(self, text, index, on_action, parent=None):
@@ -1598,14 +1609,19 @@ class VideoRow(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Fixed)
         lay = QHBoxLayout(self)
-        # Поля строки: слева место под текст, справа — отступ значка.
-        lay.setContentsMargins(0, 4, 6, 4)
+        # Поля строки: слева место под текст, справа 10 + рамка подложки —
+        # значок не должен подходить к самому краю, иначе его срезает
+        # полоса прокрутки, выезжающая при наведении.
+        lay.setContentsMargins(0, 4, self.ICON_INSET + 1, 4)
         lay.setSpacing(0)
         lay.addStretch(1)                    # место под текст
+        # Значок ставим по координатам, а не раскладкой: раскладка
+        # выравнивает по высоте виджета, а она меньше подложки выделения
+        # на поля строки списка. Из-за этого значок стоял выше центра,
+        # а при перерисовке ещё и переезжал в левый угол.
         self.badge = DownloadBadge(self)
-        lay.addWidget(self.badge, 0,
-                      Qt.AlignmentFlag.AlignRight
-                      | Qt.AlignmentFlag.AlignVCenter)
+        self.badge.raise_()
+        self._place_badge()
         self.badge.clicked.connect(self._clicked)
         # Совместимость с прежним кодом: у строки был label.
         self.label = _RowLabel(self)
@@ -1614,6 +1630,17 @@ class VideoRow(QWidget):
     def set_text(self, text):
         self.text = text
         self.update()
+
+    def _place_badge(self):
+        """Ставит значок в правый верхний угол по центру строки."""
+        self.badge.move(
+            self.width() - self.ICON_INSET - self.BAR_W,
+            (self.height() - self.BAR_W) // 2)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_badge()
+        self.badge.raise_()
 
     def _clicked(self):
         # 'done' — это уже «удалить из кэша», действие тоже нужно.
@@ -1663,7 +1690,7 @@ class VideoRow(QWidget):
         # AlignVCenter с учётом спуска шрифта опускает текст на точку.
         text_y = (self.height() - fm.height()) // 2 + fm.ascent()
         p.setPen(color)
-        p.drawText(QPoint(rect.left(), text_y), elided)
+        p.drawText(QPoint(self.TEXT_LEFT, text_y), elided)
         p.end()
         if self._state != 'busy':
             return
@@ -2112,6 +2139,10 @@ class MainWindow(QMainWindow):
         self._cache_pinned = set()
         # Документы, которые сейчас качает прелоад (служебные загрузки).
         self._preload_ids = set()
+        # Загрузки, которые человек остановил крестиком. Их не заводят
+        # заново ни прелоад, ни возврат к ролику — только новое нажатие
+        # на стрелку.
+        self._cache_stopped = set()
         self.video_list.viewport().installEventFilter(self)
         # Значки кэша обновляются сами: полоса прогресса должна идти,
         # а галочка появляться, как только файл докачался.
@@ -4114,12 +4145,32 @@ class MainWindow(QMainWindow):
         if doc_id is None:
             return
         if action == 'delete':
+            self._cache_stopped.discard(doc_id)
             self.backend.delete_cached_file(doc_id)
             print(f"[Кэш] Удалён из кэша: {doc_id}")
         elif action == 'cancel':
+            self._cache_stopped.add(doc_id)
+            # Пометку снимаем со всех строк, где этот ролик: иначе
+            # следующее нажатие стрелки уйдёт в «быстро пропустить».
+            self._unpin_doc(doc_id)
             self.backend.cancel_user_download(doc_id)
-            print(f"[Кэш] Загрузка остановлена: {doc_id}")
         QTimer.singleShot(200, self._refresh_downloads_view)
+
+    def _unpin_doc(self, doc_id):
+        """Снимает отметку «качается вручную» с ролика по его id."""
+        try:
+            messages = self.backend.current_messages
+        except Exception:
+            messages = []
+        for index in list(self._cache_pinned):
+            if not (0 <= index < len(messages)):
+                self._cache_pinned.discard(index)
+                continue
+            try:
+                if messages[index].media.document.id == doc_id:
+                    self._cache_pinned.discard(index)
+            except Exception:
+                continue
 
     def _clear_done_downloads(self):
         """Удаляет все готовые файлы кэша, кроме играющего ролика."""
@@ -4228,9 +4279,15 @@ class MainWindow(QMainWindow):
             # Остановка — это пауза, а не удаление: уже скачанное
             # остаётся, и продолжение пойдёт с того же места.
             self.backend.cancel_user_download(doc_id)
+            # Запоминаем остановленное: докачку, которую начал этот
+            # же значок, нельзя заводить заново ни по таймеру, ни по
+            # нажатию Enter. Иначе «отменил» — а через секунду снова
+            # «20% · 2 МБ/с», и кажется, что крестик не работает.
+            self._cache_stopped.add(doc_id)
             print(f"[Кэш] Загрузка остановлена: {doc_id}")
         else:
             self._cache_pinned.add(index)
+            self._cache_stopped.discard(doc_id)
             self._stop_preload()
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
@@ -4290,7 +4347,15 @@ class MainWindow(QMainWindow):
         """
         if self._cache_pinned:
             return False
-        return index not in self._cache_pinned
+        if index in self._cache_pinned:
+            return False
+        try:
+            message = self.backend.current_messages[index]
+            doc_id = message.media.document.id
+        except Exception:
+            return True
+        # Остановленное крестиком не оживляем: человек сказал «стоп».
+        return doc_id not in self._cache_stopped
 
     def on_video_selected(self, row):
         # Прелоад начала выбранного ролика, чтобы он стартовал мгновенно.

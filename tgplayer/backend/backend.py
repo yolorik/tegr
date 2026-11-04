@@ -648,19 +648,39 @@ class TelegramBackend(QObject):
     def cancel_user_download(self, doc_id):
         """Останавливает загрузку, начатую кнопкой в списке (Qt-поток).
 
-        Отличие от discard_download: файлы остаются на диске. Раньше
-        значок отмены удалял запись кэша целиком, и тут же срабатывал
-        прелоад выбранной строки: он начинал качать заново, ничего не
-        сняв. Получалось «нажал крестик — а он продолжил качать».
+        Кроме паузы, которую делает pause_download, здесь закрывается
+        писательский дескриптор файла. Без этого на Windows файл
+        остаётся занятым, и запущенный второй экземпляр Tegr очищает кэш
+        при старте (cleanup_cache), но удалить не может — файл повисает
+        и кэш растёт.
 
-        Теперь остановка — это пауза записи: куски в полёте отменяются,
-        уже скачанное лежит на диске, и нажатие на значок загрузки
-        продолжает с того же места.
+        Отличие от discard_download: скачанное остаётся на диске, и
+        нажатие на значок загрузки продолжает с того же места.
         """
         if self.loop is None or self.loop.is_closed():
             return
         self.loop.call_soon_threadsafe(
-            self._pause_download_on_loop, doc_id)
+            self._cancel_user_download_on_loop, doc_id)
+
+    def _cancel_user_download_on_loop(self, doc_id):
+        e = self.cache.get(doc_id)
+        if e is None or e.get('complete'):
+            print(f"[Кэш] Останавливать нечего: {doc_id}")
+            return
+        self._pause_download_on_loop(doc_id)
+        # Дескриптор закрываем отдельно от записи: ensure_cache умеет
+        # открыть его заново, когда загрузку попросят снова.
+        fh = e.get('fh')
+        if fh is not None:
+            try:
+                fh.flush()
+            except Exception:
+                pass
+            try:
+                fh.close()
+            except Exception:
+                pass
+            e['fh'] = None
 
     def forget_cache_entry(self, doc_id):
         """Забывает готовую запись кэша, не трогая файл (Qt-поток).
@@ -786,6 +806,10 @@ class TelegramBackend(QObject):
             if not t.done():
                 t.cancel()
         e['tasks'] = []
+        # Скорость обнуляем: иначе на вкладке загрузок у остановленной
+        # загрузки продолжала бы висеть последняя цифра.
+        e['speed_bytes'] = 0
+        print(f"[Кэш] Загрузка остановлена: {doc_id}")
 
     def discard_other_downloads(self, keep_ids):
         """Удаляет кэш всех роликов, кроме перечисленных (Qt-поток).
