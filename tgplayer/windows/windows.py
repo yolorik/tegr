@@ -3112,10 +3112,19 @@ class MainWindow(QMainWindow):
         subprocess.Popen в этой ситуации уже подводил: без повышения прав
         установщик молча закрывался, не создав даже временную папку, и по
         журналу было непонятно, что произошло.
+
+        Лог установки пишется рядом с установщиком (/LOG). Без него при
+        обновлении с чужого компьютера видно только «не обновилось», а
+        причины нет: в нём записано, нашёлся ли прежний путь, был ли
+        режим тихим и запустился ли плеер после установки.
         """
         try:
+            log_path = os.path.splitext(path)[0] + '_install.log'
+            # Кавычки нужны: во временной папке бывает пробел в имени
+            # пользователя.
             params = ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART '
-                      '/CLOSEAPPLICATIONS')
+                      f'/CLOSEAPPLICATIONS /LOG="{log_path}"')
+            print(f"[Обновление] журнал установки: {log_path}")
             result = ctypes.windll.shell32.ShellExecuteW(
                 None, 'runas', path, params, None, 1)
             # ShellExecuteW возвращает код больше 32 при успехе. Если

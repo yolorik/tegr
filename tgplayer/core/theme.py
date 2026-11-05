@@ -420,6 +420,43 @@ QStatusBar::item {{ border: none; }}
    общего: при 13 текст в неё не влезал и обрезался сверху и снизу. */
 QLabel#statusline {{ font-size: 12px; }}
 
+/* Вкладки главного окна.
+   Без этих правил Qt рисует их стилем системы. На Windows 11 он тёмный,
+   и вкладки выглядят как часть программы, а на Windows 10 — светлым
+   прямоугольником с белой подложкой и серыми подписями: в тёмном окне
+   это выглядело как чужая деталь. Задаём и саму панель, и корешок, и
+   состояние выбранного — тогда вид одинаковый везде. */
+QTabWidget::pane {{
+    border: none; background: transparent; top: -1px;
+}}
+QTabWidget::tab-bar {{ left: 0px; }}
+QTabBar {{
+    background: transparent;
+    /* Собственное рисование: иначе стиль системы рисует свои рамки
+       поверх наших цветов и на Windows 10 снова появляется белое. */
+    qproperty-drawBase: 0;
+}}
+QTabBar::tab {{
+    background: {TG_FIELD};
+    color: {TG_TEXT_DIM};
+    border: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 6px 16px;
+    margin-right: 4px;
+    min-width: 70px;
+}}
+QTabBar::tab:hover {{ background: {TG_HOVER}; color: {TG_TEXT}; }}
+QTabBar::tab:selected {{
+    background: {TG_SELECT}; color: #ffffff;
+}}
+QTabBar::tab:!selected {{ margin-top: 3px; }}
+QTabBar::scroller {{ width: 0px; }}
+QTabBar QToolButton {{
+    background: {TG_FIELD}; border: none; border-radius: 4px;
+    color: {TG_TEXT}; padding: 0px;
+}}
+
 QToolTip {{
     background: {TG_PANEL}; color: {TG_TEXT};
     border: 1px solid {TG_DIVIDER}; border-radius: 6px; padding: 5px 8px;
