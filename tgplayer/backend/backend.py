@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import os
+import random
 import re
 import socket
 import subprocess
@@ -112,6 +113,9 @@ class TelegramBackend(QObject):
     # от videos_loaded: пометки каналов нужны и для каналов, которые
     # пользователь не открывал.
     channels_checked = pyqtSignal(object)
+    # Ответ на запрос сообщения из истории: (запись, сообщение или None).
+    # Сигнал доставляет результат из цикла backend в поток окна.
+    history_message = pyqtSignal(object, object)
     error_occurred = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     # Состояние связи с Telegram: 'ok', 'off' или 'connecting'. По нему
@@ -148,6 +152,8 @@ class TelegramBackend(QObject):
         # Позиции просмотра: id документа -> секунды. Нужны, чтобы вернуться
         # к ролику с того же места, а не с нуля.
         self.positions = history.load_positions()
+        # Записи для вкладки «История»: название, канал, когда смотрели.
+        self.history_entries = history.load_entries()
         # Настройки, переживающие перезапуск: громкость, режим декодера,
         # автовыбор качества, скорость, геометрия окон.
         self.settings = settings.load()
@@ -2443,7 +2449,7 @@ class TelegramBackend(QObject):
         if doc_id is None or doc_id in self.watched:
             return False
         self.watched.add(doc_id)
-        history.save(self.watched, self.positions)
+        history.save(self.watched, self.positions, self.history_entries)
         return True
 
     def set_setting(self, key, value):
@@ -2470,10 +2476,146 @@ class TelegramBackend(QObject):
             self.positions[doc_id] = float(seconds)
         else:
             self.positions.pop(doc_id, None)
+        # Вкладке «История» позиция нужна и для коротких роликов: там она
+        # показывается как «сколько просмотрено», а не как точка возврата.
+        record = self.history_entries.get(doc_id)
+        if record is not None:
+            record['position'] = max(0.0, float(seconds or 0.0))
+
+    def record_history(self, doc_id, title='', channel='', peer_id=None,
+                       message_id=None, position=0.0, duration=0.0,
+                       size=0):
+        """Добавляет/обновляет запись о просмотре для вкладки «История».
+
+        Пишется при каждом запуске ролика, а не только при первом
+        просмотре: повторный запуск должен поднимать запись наверх, а не
+        оставлять её в глубине списка.
+        """
+        if doc_id is None:
+            return
+        record = self.history_entries.get(doc_id) or {'doc_id': doc_id}
+        if title:
+            record['title'] = title
+        if channel:
+            record['channel'] = channel
+        if peer_id is not None:
+            try:
+                record['peer_id'] = int(peer_id)
+            except (TypeError, ValueError):
+                pass
+        if message_id is not None:
+            try:
+                record['message_id'] = int(message_id)
+            except (TypeError, ValueError):
+                pass
+        if position:
+            record['position'] = max(0.0, float(position))
+        if duration:
+            record['duration'] = max(0.0, float(duration))
+        if size:
+            record['size'] = int(size)
+        record['doc_id'] = int(doc_id)
+        record['watched_at'] = time.time()
+        self.history_entries[doc_id] = record
+        history.save(self.watched, self.positions, self.history_entries)
+
+    def fetch_history_message(self, record):
+        """Просит Telegram сообщение из истории и отдаёт его сигналом.
+
+        Нужно для записей из других каналов: открыть ролик можно только по
+        свежему сообщению, а не по одному id документа.
+        """
+        if not isinstance(record, dict):
+            self.history_message.emit(record, None)
+            return
+        peer_id = record.get('peer_id')
+        message_id = record.get('message_id')
+        if (peer_id is None or message_id is None
+                or self.loop is None or self.client is None):
+            self.history_message.emit(record, None)
+            return
+
+        async def work():
+            try:
+                message = await self.client.get_messages(
+                    peer_id, ids=message_id)
+                self.history_message.emit(record, message)
+            except Exception as ex:
+                print(f"[История] Сообщение не получено: {ex}")
+                self.history_message.emit(record, None)
+
+        # Если цикл ещё не готов, submit_coroutine закроет корутину и
+        # вернёт None. Тогда окно должно получить отказ, а не ждать вечно.
+        if self.submit_coroutine(work()) is None:
+            self.history_message.emit(record, None)
+
+    def forget_history(self, doc_id):
+        """Убирает одну запись из вкладки «История».
+
+        Пометку «просмотрено» и позицию просмотра не трогаем: это
+        отдельные вещи, и удаление записи из журнала не должно сбрасывать
+        место, на котором человек остановился.
+        """
+        if doc_id is None:
+            return
+        if self.history_entries.pop(doc_id, None) is not None:
+            history.save(self.watched, self.positions, self.history_entries)
+
+    def clear_history(self):
+        """Очищает все записи вкладки «История».
+
+        «Просмотрено» и позиции остаются: очищается журнал просмотров,
+        а не состояние роликов.
+        """
+        if not self.history_entries:
+            return
+        self.history_entries.clear()
+        history.save(self.watched, self.positions, self.history_entries)
+
+    def download_history_message(self, record):
+        """Скачивает ролик из истории в кэш, не открывая плеер."""
+        if not isinstance(record, dict):
+            return
+
+        async def work():
+            doc_id = record.get('doc_id')
+            message = None
+            # Сначала ищем сообщение в уже загруженном канале: так не
+            # нужен лишний запрос к Telegram.
+            for candidate in list(self.current_messages or []):
+                try:
+                    if candidate.media.document.id == doc_id:
+                        message = candidate
+                        break
+                except Exception:
+                    continue
+            if message is None:
+                peer_id = record.get('peer_id')
+                message_id = record.get('message_id')
+                if peer_id is None or message_id is None:
+                    self.status_changed.emit('Ролик больше недоступен')
+                    return
+                try:
+                    message = await self.client.get_messages(
+                        peer_id, ids=message_id)
+                except Exception as ex:
+                    print(f"[История] Ролик для загрузки не получен: {ex}")
+                    self.status_changed.emit('Не удалось получить ролик')
+                    return
+            document = getattr(getattr(message, 'media', None),
+                               'document', None)
+            if document is None:
+                self.status_changed.emit('Ролик больше недоступен')
+                return
+            self.status_changed.emit('Скачиваю в кэш...')
+            await self.ensure_cache(message, workers=config.DOWNLOAD_WORKERS)
+
+        if self.submit_coroutine(work()) is None:
+            self.status_changed.emit('Не удалось начать загрузку')
 
     def flush_history(self):
         """Пишет историю просмотров и позиции на диск."""
-        history.save(self.watched, self.positions)
+        history.save(self.watched, self.positions, self.history_entries)
 
     # ----------------------------------------------------------
     # КЭШИРОВАНИЕ И СТРИМИНГ
@@ -2704,7 +2846,14 @@ class TelegramBackend(QObject):
             # Скорость считаем по байтам за последний промежуток, а не
             # накопительно: накопительная сумма росла бы бесконечно и
             # показывала «133 МБ/с» вместо настоящей скорости.
+            # speed_bytes — текущая скорость (байт/с) для вкладки загрузок.
+            # speed_total — накопленные байты: по нему плеер считает
+            # скорость за окно как разницу между двумя замерами. Это разные
+            # величины, и раньше их путали: плеер брал разницу от скорости
+            # и почти всегда получал ноль, а показывал половину средней.
             'speed_bytes': 0,
+            'speed_total': 0,
+            'first_byte_ts': 0.0,
             'speed_window_bytes': 0,
             'speed_window_ts': time.monotonic(),
             'speed_bps': 0.0,
@@ -2714,8 +2863,11 @@ class TelegramBackend(QObject):
         # Канал, откуда ролик: вкладка загрузок показывает его рядом с
         # названием, чтобы было понятно, что именно качается.
         if message is not None:
-            e['peer_id'] = message.peer_id
-            e['peer_title'] = self._peer_title(message.peer_id)
+            # Храним помеченный id (-100...), а не объект PeerChannel:
+            # по нему «Перейти к ролику на канале» сравнивает запись с
+            # dialog.id, и объект с числом никогда не совпадал.
+            e['peer_id'] = getattr(message, 'chat_id', None) or message.peer_id
+            e['peer_title'] = self._peer_title(e['peer_id'])
 
         self.cache[doc_id] = e
 
@@ -3054,13 +3206,38 @@ class TelegramBackend(QObject):
             ok = False
             aborted = False
 
-            # Начало файла — мелкими порциями, остальное — крупными.
-            chunk_size = config.FAST_CHUNK if start < config.FAST_HEAD_BYTES else config.CHUNK_SIZE
-
             try:
                 for attempt in range(config.SEG_RETRIES + 1):
+                    stream = None
                     try:
                         request_offset = start + pos
+
+                        # 1 МБ — оптимум по замеру 06.11.2026: 5.9–6.2 МБ/с
+                        # против 2.8–3.0 у 512 КБ. 512 КБ остаётся запасным
+                        # путём, если сервер или CDN не принял 1 МБ.
+                        chunk_size = (512 * 1024 if e.get('use_small_chunks')
+                                      else config.CHUNK_SIZE)
+
+                        # Не пересекаем границу 1 МБ: такой запрос сервер
+                        # отвергает (LimitInvalid). Даже если позиция после
+                        # короткого ответа перестала быть ровной, режем
+                        # запрос по ближайшей границе.
+                        boundary = ((request_offset // config.CHUNK_SIZE) + 1) \
+                                   * config.CHUNK_SIZE
+                        max_len = boundary - request_offset
+                        if chunk_size > max_len:
+                            chunk_size = max_len
+
+                        # И только степени двойки. Протокол разрешает любое
+                        # кратное 4 КБ, но на живом тесте 06.11.2026 сервер
+                        # отверг 872 КБ (LimitInvalid) и принял 512 КБ.
+                        # Официальные клиенты тоже просят 1 МБ / 512 / 256 /
+                        # 128 КБ. Остаток файла добирается сам: сервер
+                        # отдаёт меньше запрошенного в конце.
+                        step = 4096
+                        while step * 2 <= chunk_size:
+                            step *= 2
+                        chunk_size = max(4096, step)
 
                         # Скачиваем по СООБЩЕНИЮ, а не по документу.
                         # Telethon внутри сам ловит FILE_REFERENCE_EXPIRED
@@ -3070,16 +3247,28 @@ class TelegramBackend(QObject):
                         # ошибка вылетает наружу, и загрузка встаёт навсегда.
                         source = e.get('message') or e.get('document') or document
 
+                        # request_size передаём явно: у iter_download он по
+                        # умолчанию 512 КБ, и без этого chunk_size=1 МБ
+                        # доходил до сети только половиной.
                         stream = self.client.iter_download(
                             source,
                             offset=request_offset,
+                            request_size=chunk_size,
                             chunk_size=chunk_size
                         ).__aiter__()
 
                         while True:
+                            # Кусок, который ждёт плеер, и фоновый требуют
+                            # разного терпения: за 45 секунд ожидания буфер
+                            # у читателя опустеет. Проверяем на каждом
+                            # чанке — нужность может появиться по ходу.
+                            chunk_timeout = (
+                                config.PIECE_STALL_URGENT_SECS
+                                if self._piece_wanted(e, idx)
+                                else config.PIECE_STALL_SECS)
                             try:
                                 chunk = await asyncio.wait_for(
-                                    stream.__anext__(), config.PIECE_STALL_SECS)
+                                    stream.__anext__(), chunk_timeout)
                             except StopAsyncIteration:
                                 break
                             except asyncio.CancelledError:
@@ -3095,15 +3284,16 @@ class TelegramBackend(QObject):
                                         or self._is_closed()):
                                     raise
                                 print(f"[Кэш] Кусок {idx}: поток не отдал "
-                                      f"данные за {config.PIECE_STALL_SECS:.0f} с — "
+                                      f"данные за {chunk_timeout:.0f} с — "
                                       "бросаю")
                                 aborted = True
                                 break
                             except asyncio.TimeoutError:
-                                # Поток замолчал. Ждать дальше нечего: этот
-                                # кусок нужен читателю, а соединение висит.
+                                # Поток замолчал. Если кусок ждёт плеер,
+                                # терпеть 45 секунд незачем — бросаем и
+                                # переподключаемся; фоновый можно подождать.
                                 print(f"[Кэш] Кусок {idx}: поток молчит "
-                                      f"{config.PIECE_STALL_SECS:.0f} с — бросаю")
+                                      f"{chunk_timeout:.0f} с — бросаю")
                                 aborted = True
                                 break
 
@@ -3135,7 +3325,11 @@ class TelegramBackend(QObject):
                             # вместо настоящей скорости.
                             e['speed_window_bytes'] = (
                                 e.get('speed_window_bytes', 0) + len(chunk))
+                            e['speed_total'] = (
+                                e.get('speed_total', 0) + len(chunk))
                             now_ts = time.monotonic()
+                            if not e.get('first_byte_ts'):
+                                e['first_byte_ts'] = now_ts
                             elapsed = now_ts - e.get('speed_window_ts', now_ts)
                             if elapsed >= 0.5:
                                 e['speed_bps'] = (
@@ -3177,6 +3371,46 @@ class TelegramBackend(QObject):
                     except asyncio.CancelledError:
                         raise
                     except Exception as ex:
+                        # FloodWait — это не обрыв связи. Переподключаться
+                        # бессмысленно: Telegram всё равно велит ждать, а
+                        # новый маршрут только добавляет шторм запросов.
+                        # Просто спим ровно столько, сколько просят.
+                        flood = (telethon_boot.FloodWaitError is not None
+                                 and isinstance(ex, telethon_boot.FloodWaitError))
+                        if not flood and 'FLOOD_WAIT' in str(ex).upper():
+                            flood = True
+                        if flood:
+                            wait = float(getattr(ex, 'seconds', 10) or 10) + 1.0
+                            print(f"[Кэш] Кусок {idx}: Telegram просит "
+                                  f"подождать {wait:.0f} с — жду, не "
+                                  "переподключаюсь")
+                            try:
+                                if stream is not None:
+                                    await stream.aclose()
+                            except Exception:
+                                pass
+                            await asyncio.sleep(wait)
+                            continue
+
+                        # Сервер не принял диапазон: обычно это запрос,
+                        # пересекающий границу 1 МБ (так бывает у хвоста,
+                        # если его начало не выровнено). Переходим на
+                        # 512 КБ для этого файла.
+                        limit_invalid = (
+                            (telethon_boot.LimitInvalidError is not None
+                             and isinstance(ex, telethon_boot.LimitInvalidError))
+                            or 'LIMIT_INVALID' in str(ex).upper())
+                        if limit_invalid and not e.get('use_small_chunks'):
+                            print(f"[Кэш] Кусок {idx}: сервер не принял "
+                                  "1 МБ — перехожу на 512 КБ")
+                            e['use_small_chunks'] = True
+                            try:
+                                if stream is not None:
+                                    await stream.aclose()
+                            except Exception:
+                                pass
+                            continue
+
                         # Ссылка на файл истекла. Это НЕ сетевая ошибка:
                         # переподключение и повтор с тем же документом дают
                         # ту же ошибку. Нужно заново прочитать сообщение,
@@ -3218,9 +3452,12 @@ class TelegramBackend(QObject):
                             print(f"[Кэш] Кусок {idx}: ошибка: {ex}")
                             break
                         # Смена режима VPN рвёт маршрут: без нового перебора
-                        # все повторы уйдут в тот же мёртвый адрес.
+                        # все повторы уйдут в тот же мёртвый адрес. Пауза
+                        # растёт с каждой попыткой и разъезжается джиттером,
+                        # иначе несколько воркеров бьют одновременно.
                         await self.reconnect(force=True)
-                        await asyncio.sleep(0.10 * (attempt + 1))
+                        await asyncio.sleep(min(4.0, 0.5 * (2 ** attempt))
+                                            + random.uniform(0, 0.3))
 
                 if ok:
                     e['piece_done'].add(idx)

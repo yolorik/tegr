@@ -81,13 +81,25 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Плеер держит этот мьютекс всё время работы: установщик по нему поймёт,
-; что программа запущена, и не станет перезаписывать занятые файлы.
-AppMutex=TGPlayerSingleInstance
-; При обновлении из плеера установщик закрывает его сам по этой строке:
-; раньше секции не было, и /CLOSEAPPLICATIONS не находил, кого закрывать —
-; старый плеер продолжал держать Tegr.exe, новый файл не перезаписывался,
-; версия оставалась прежней.
+; AppMutex здесь БОЛЬШЕ НЕТ — и это важно.
+;
+; Раньше стояло AppMutex=TGPlayerSingleInstance. При ручной установке это
+; работало: если плеер запущен, установщик показывал «закройте программу».
+; Но обновление из плеера запускает установщик с /SUPPRESSMSGBOXES, и на
+; этот вопрос Inno Setup отвечает сам — «Отмена». В журнале установки это
+; видно дословно:
+;
+;   Defaulting to Cancel for suppressed message box (OK/Cancel):
+;   Setup has detected that Tegr is currently running.
+;
+; Установщик завершался через несколько миллисекунд после запуска, ещё до
+; копирования файлов, — поэтому «скачалось, нажал Перезапустить, плеер
+; закрылся, версии нет». Ручная установка работала, потому что при ней
+; плеер не запущен и мьютекса нет.
+;
+; Вместо директивы InitializeSetup ждёт, пока мьютекс исчезнет (плеер
+; закрывается сам через 0,3 с после запуска установщика), а занятые файлы
+; закрывает Restart Manager — для этого ниже включён CloseApplications.
 CloseApplications=yes
 CloseApplicationsFilter={#AppExe}
 ; Отсчёт до замены файлов: антивирус успевает отпустить файл, и
@@ -278,11 +290,17 @@ end;
 function InitializeSetup(): Boolean;
 var
   UninstallKey: String;
+  Waited: Integer;
 begin
-  // Скобки в имени раздела удваиваем: в Pascal Script они служебные, и
-  // без удвоения ключ выходит несуществующим.
+  // В имени ключа ровно одна пара скобок. Раньше здесь стояли двойные
+  // «{{...}}» — их путали со скобками в [Setup], где «{{» это способ
+  // записать литеральную скобку. В строке Pascal Script такой
+  // необходимости нет: скобки здесь обычные символы. Из-за удвоения
+  // ключ не находился, InstallLocation не читался, и RunAfterUpdate
+  // оставался нулём — установка проходила, а плеер после неё не
+  // запускался.
   UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\'
-                  + '{{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}}_is1';
+                  + '{8F3C1A64-2B7E-4D91-9C55-6E0A7B4D2F18}_is1';
   OldDir := GetPreviousAppDir(UninstallKey);
   if OldDir = '' then
     OldDir := ExpandConstant('{autopf}\' + LegacyName);
@@ -291,6 +309,28 @@ begin
                      or RegKeyExists(HKLM, UninstallKey));
   Log('RunAfterUpdate=' + IntToStr(Ord(RunAfterUpdate))
       + ', прежняя папка: ' + OldDir);
+
+  { Ждём, пока старый плеер закроется.
+    При обновлении из плеера установщик стартует, пока программа ещё
+    работает: она закрывается сама через 0,3 с. Раньше здесь стоял
+    AppMutex, и тихий режим отвечал на него «Отмена» — установка
+    обрывалась до копирования файлов. Теперь просто ждём исчезновения
+    мьютекса; это надёжнее и не зависит от того, как ответит Inno Setup
+    на скрытый вопрос. По истечении срока не падаем: если плеер всё же
+    остался, занятые файлы закроет Restart Manager (CloseApplications).
+
+    Ждём только в тихом режиме — это и есть обновление из плеера.
+    При ручном запуске плеер сам не закроется, и ожидание лишь
+    задерживало бы появление окна установки на 15 секунд. }
+  Waited := 0;
+  if WizardSilent() then
+    while CheckForMutexes('TGPlayerSingleInstance') and (Waited < 15000) do
+    begin
+      Sleep(200);
+      Waited := Waited + 200;
+    end;
+  if Waited > 0 then
+    Log('Ждал закрытия плеера ' + IntToStr(Waited) + ' мс');
 
   MigratePreviousInstall();
 

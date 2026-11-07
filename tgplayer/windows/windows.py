@@ -19,8 +19,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import (
-    QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread,
-    QTimer, pyqtSignal)
+    QCollator, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt,
+    QThread, QTimer, pyqtSignal)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QFontMetrics, QFontMetricsF, QIcon,
     QImage, QKeySequence, QPalette,
@@ -1444,7 +1444,9 @@ class RowDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         hint = super().sizeHint(option, index)
-        return QSize(hint.width(), max(hint.height(), self.icon_size + 14))
+        return QSize(
+            hint.width(),
+            max(hint.height(), theme.scale_px(self.icon_size) + theme.scale_px(14)))
 
     def _icon_start(self):
         """Откуда начинается картинка от левого края строки.
@@ -1454,7 +1456,8 @@ class RowDelegate(QStyledItemDelegate):
         отступ берём такой же: иначе она сдвигается влево и упирается
         в край выделения.
         """
-        return self.PAD_X + self.PAD_X
+        pad = theme.scale_px(self.PAD_X)
+        return pad + pad
 
     def paint(self, painter, option, index):
         # Состояние «строка пустая, виджет нарисован поверх» — обычная
@@ -1463,7 +1466,8 @@ class RowDelegate(QStyledItemDelegate):
         try:
             text = index.data(Qt.ItemDataRole.DisplayRole)
             icon = index.data(Qt.ItemDataRole.DecorationRole)
-            pm = icon.pixmap(self.icon_size, self.icon_size) if icon else None
+            icon_px = theme.scale_px(self.icon_size)
+            pm = icon.pixmap(icon_px, icon_px) if icon else None
             rect = option.rect
             # Подложку выделения и наведения рисует стиль, но без
             # собственного текста: стиль поставил бы его по-своему.
@@ -1477,9 +1481,9 @@ class RowDelegate(QStyledItemDelegate):
                               opt, painter, opt.widget)
             x = rect.left() + self._icon_start()
             if pm is not None and not pm.isNull():
-                y = rect.top() + (rect.height() - self.icon_size) // 2
+                y = rect.top() + (rect.height() - icon_px) // 2
                 painter.drawPixmap(x, y, pm)
-                x += self.icon_size + 10
+                x += icon_px + theme.scale_px(10)
             if text:
                 font = QFont(opt.font)
                 painter.setFont(font)
@@ -1490,7 +1494,7 @@ class RowDelegate(QStyledItemDelegate):
                     QPalette.ColorRole.HighlightedText if selected
                     else QPalette.ColorRole.Text)
                 painter.setPen(color)
-                avail = rect.right() - self.PAD_X - x
+                avail = rect.right() - theme.scale_px(self.PAD_X) - x
                 elided = fm.elidedText(str(text),
                                        Qt.TextElideMode.ElideRight, avail)
                 text_y = rect.top() + (rect.height() - fm.height()) // 2 \
@@ -1511,8 +1515,10 @@ class DownloadBadge(QToolButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setIconSize(QSize(18, 18))
-        self.setFixedSize(26, 26)
+        icon_px = theme.scale_px(18)
+        badge_px = theme.scale_px(26)
+        self.setIconSize(QSize(icon_px, icon_px))
+        self.setFixedSize(badge_px, badge_px)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # Подложка только по наведению и ровно по размеру кнопки. Раньше
@@ -1524,7 +1530,7 @@ class DownloadBadge(QToolButton):
             ' padding: 0px; }'
             'QToolButton:hover {'
             ' background: rgba(255, 255, 255, 0.12);'
-            ' border-radius: 13px; }')
+            f' border-radius: {theme.scale_px(13)}px; }}')
         self._state = 'idle'
         self._hover = False
         self.set_state('idle')
@@ -1596,6 +1602,11 @@ class VideoRow(QWidget):
     ICON_INSET = 10
     ROW_H = 34
 
+    @classmethod
+    def row_height(cls):
+        """Высота строки с учётом масштаба интерфейса."""
+        return theme.scale_px(cls.ROW_H)
+
     def __init__(self, text, index, on_action, parent=None):
         super().__init__(parent)
         self.index = index
@@ -1603,6 +1614,14 @@ class VideoRow(QWidget):
         self._on_action = on_action
         self._progress = 0.0
         self._state = 'idle'
+        # Размеры, заданные кодом, тоже масштабируем: таблица стилей
+        # растягивает шрифт, но свою отрисовку она не знает.
+        self._bar_w = theme.scale_px(self.BAR_W)
+        self._bar_h = theme.scale_px(self.BAR_H)
+        self._progress_w = theme.scale_px(self.PROGRESS_W)
+        self._text_left = theme.scale_px(self.TEXT_LEFT)
+        self._right_pad = theme.scale_px(self.RIGHT_PAD)
+        self._icon_inset = theme.scale_px(self.ICON_INSET)
         # Строка прозрачна: фон и выделение рисует сам список.
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1611,14 +1630,16 @@ class VideoRow(QWidget):
         # крошечную подсказку по высоте, и строка сжимается до 14 точек.
         # Только минимум: строку может растянуть подложка (у неё есть
         # поля), и жёсткая высота потом не совпадала с ней.
-        self.setMinimumHeight(self.ROW_H)
+        self.setMinimumHeight(self.row_height())
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Preferred)
         lay = QHBoxLayout(self)
         # Поля строки: слева место под текст, справа 10 + рамка подложки —
         # значок не должен подходить к самому краю, иначе его срезает
         # полоса прокрутки, выезжающая при наведении.
-        lay.setContentsMargins(0, 4, self.ICON_INSET + 1, 4)
+        lay.setContentsMargins(0, theme.scale_px(4),
+                               self._icon_inset + theme.scale_px(1),
+                               theme.scale_px(4))
         lay.setSpacing(0)
         lay.addStretch(1)                    # место под текст
         # Значок ставим по координатам, а не раскладкой: раскладка
@@ -1640,8 +1661,8 @@ class VideoRow(QWidget):
     def _place_badge(self):
         """Ставит значок в правый верхний угол по центру строки."""
         self.badge.move(
-            self.width() - self.ICON_INSET - self.BAR_W,
-            (self.height() - self.BAR_W) // 2)
+            self.width() - self._icon_inset - self._bar_w,
+            (self.height() - self._bar_w) // 2)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1678,9 +1699,9 @@ class VideoRow(QWidget):
 
     def _icon_rect(self):
         """Место значка: правый край строки, по центру по вертикали."""
-        return QRect(self.width() - self.ICON_INSET - self.BAR_W,
-                     (self.height() - self.BAR_W) // 2,
-                     self.BAR_W, self.BAR_W)
+        return QRect(self.width() - self._icon_inset - self._bar_w,
+                     (self.height() - self._bar_w) // 2,
+                     self._bar_w, self._bar_w)
 
     def paintEvent(self, event):
         """Название слева, полоса прогресса — перед значком."""
@@ -1691,13 +1712,14 @@ class VideoRow(QWidget):
         except Exception:
             color = QColor('#ffffff')
         font = QFont(self.font())
-        font.setPixelSize(13)
+        font.setPixelSize(theme.scale_px(13))
         p.setFont(font)
         fm = p.fontMetrics()
         # Текст занимает всё, кроме значка и места под полосу справа.
-        right = self.BAR_W + self.PROGRESS_W + self.ICON_INSET + 14
+        gap = theme.scale_px(14)
+        right = self._bar_w + self._progress_w + self._icon_inset + gap
         if self._state not in ('busy', 'paused'):
-            right = self.BAR_W + self.ICON_INSET + 14
+            right = self._bar_w + self._icon_inset + gap
         rect = self.rect().adjusted(0, 0, -right, 0)
         elided = fm.elidedText(
             self.text, Qt.TextElideMode.ElideRight, rect.width())
@@ -1705,7 +1727,7 @@ class VideoRow(QWidget):
         # AlignVCenter с учётом спуска шрифта опускает текст на точку.
         text_y = (self.height() - fm.height()) // 2 + fm.ascent()
         p.setPen(color)
-        p.drawText(QPoint(self.TEXT_LEFT, text_y), elided)
+        p.drawText(QPoint(self._text_left, text_y), elided)
         p.end()
         if self._state == 'paused':
             # На паузе вместо полосы — серый след: видно, что загрузка
@@ -1719,10 +1741,11 @@ class VideoRow(QWidget):
     def _paint_progress(self, progress, paused=False):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w = self.PROGRESS_W
-        h = self.BAR_H
+        w = self._progress_w
+        h = self._bar_h
         # Слева от значка: значок стоит у правого края строки.
-        x = self.width() - self.ICON_INSET - self.BAR_W - 8 - w
+        x = (self.width() - self._icon_inset - self._bar_w
+             - theme.scale_px(8) - w)
         y = (self.height() - h) // 2
         try:
             accent = QColor(theme.theme()['accent'])
@@ -1734,6 +1757,109 @@ class VideoRow(QWidget):
         p.setBrush(QColor(255, 255, 255, 110) if paused else accent)
         p.drawRoundedRect(QRectF(x, y, max(1.0, w * progress), h),
                           h / 2, h / 2)
+        p.end()
+
+
+class HistoryRow(QWidget):
+    """Строка истории: название ролика и канал/время под ним."""
+
+    ROW_H = 52
+    TEXT_LEFT = 10
+
+    @classmethod
+    def row_height(cls):
+        """Высота строки с учётом масштаба интерфейса."""
+        return theme.scale_px(cls.ROW_H)
+
+    def __init__(self, title, meta, parent=None, on_check=None,
+                 selectable=False, checked=False):
+        super().__init__(parent)
+        self.title = title
+        self.meta = meta
+        self._on_check = on_check
+        self._selectable = False
+        self._text_left = theme.scale_px(self.TEXT_LEFT)
+        self._text_x = self._text_left
+        self._check_x = theme.scale_px(8)
+        self._check_size = theme.scale_px(18)
+        self._check_gap = theme.scale_px(8)
+        # Фон и выделение рисует список, как и у строк роликов.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setMinimumHeight(self.row_height())
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Preferred)
+
+        self.check = QCheckBox(self)
+        self.check.setStyleSheet('QCheckBox { background: transparent; }')
+        self.check.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check.setToolTip('Выбрать запись')
+        self.check.toggled.connect(self._on_toggled)
+        self.set_selectable(selectable, checked)
+
+    def set_selectable(self, on, checked=False):
+        """Включает/выключает галочку выбора записи."""
+        self._selectable = bool(on)
+        self.check.blockSignals(True)
+        self.check.setChecked(bool(checked))
+        self.check.blockSignals(False)
+        self.check.setVisible(self._selectable)
+        self._text_x = (self._check_x + self._check_size + self._check_gap
+                        if self._selectable else self._text_left)
+        self._place_check()
+        self.update()
+
+    def _place_check(self):
+        size = self._check_size
+        self.check.setFixedSize(size, size)
+        self.check.move(self._check_x, max(0, (self.height() - size) // 2))
+        self.check.raise_()
+
+    def _on_toggled(self, checked):
+        if self._on_check is not None:
+            self._on_check(bool(checked))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_check()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_check()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        try:
+            colors = theme.theme()
+            text = QColor(colors.get('text') or '#ffffff')
+            dim = QColor(colors.get('text_dim') or '#9a9a9a')
+        except Exception:
+            text, dim = QColor('#ffffff'), QColor('#9a9a9a')
+
+        rect = self.rect().adjusted(
+            self._text_x, theme.scale_px(5),
+            -theme.scale_px(10), -theme.scale_px(5))
+        font = QFont(self.font())
+        font.setPixelSize(theme.scale_px(13))
+        p.setFont(font)
+        fm = p.fontMetrics()
+        p.setPen(text)
+        p.drawText(
+            QPoint(rect.left(), rect.top() + fm.ascent()),
+            fm.elidedText(self.title, Qt.TextElideMode.ElideRight,
+                          rect.width()))
+        font2 = QFont(self.font())
+        font2.setPixelSize(theme.scale_px(11))
+        p.setFont(font2)
+        fm2 = p.fontMetrics()
+        y2 = rect.top() + fm.height() + fm2.ascent() - 1
+        p.setPen(dim)
+        p.drawText(
+            QPoint(rect.left(), y2),
+            fm2.elidedText(self.meta, Qt.TextElideMode.ElideRight,
+                           rect.width()))
         p.end()
 
 
@@ -1771,14 +1897,34 @@ class DownloadsView(QWidget):
         self.list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_menu)
+        # В режиме выбора двойной клик/Enter по строке переключает
+        # галочку, как и в списке истории.
+        self.list.itemActivated.connect(self._on_item_activated)
         lay.addWidget(self.list, 1)
 
         self.btn_clear = QPushButton('Удалить все скачанные')
         self.btn_clear.setToolTip(
             'Удаляет из кэша все готовые ролики, кроме играющего')
-        # Кнопка справа: слева и так начинается список, а действие над
-        # всем кэшем на правом краю не путается со строками загрузок.
-        lay.addWidget(self.btn_clear, 0, Qt.AlignmentFlag.AlignRight)
+        # Режим выбора: отдельная кнопка включает галочки в строках,
+        # рядом появляется удаление выбранного. «Удалить все» при этом
+        # прячется, чтобы не смешивать два разных действия.
+        self.select_mode = False
+        self.checked = set()         # doc_id выбранных загрузок
+        self.btn_select = QPushButton('Выбрать...')
+        self.btn_select.setToolTip(
+            'Выбрать несколько загрузок для удаления')
+        self.btn_select.clicked.connect(self._toggle_select)
+        self.btn_delete_selected = QPushButton('Удалить выбранные')
+        self.btn_delete_selected.setEnabled(False)
+        self.btn_delete_selected.hide()
+
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.btn_select)
+        bottom.addWidget(self.btn_delete_selected)
+        bottom.addStretch(1)
+        # «Удалить все» остаётся справа — там же, где было.
+        bottom.addWidget(self.btn_clear)
+        lay.addLayout(bottom)
 
         self._rows = {}              # имя файла -> DownloadRow
         self.empty_label = None
@@ -1787,9 +1933,70 @@ class DownloadsView(QWidget):
     def _show_empty(self):
         self.list.clear()
         self._rows = {}
+        self.checked.clear()
+        if self.select_mode:
+            self.set_select_mode(False)
+        self.btn_select.setEnabled(False)
+        self._sync_delete_button()
         item = QListWidgetItem('Сейчас ничего не качается')
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         self.list.addItem(item)
+
+    def reset(self):
+        """Сбрасывает строки: при смене масштаба их нужно пересобрать."""
+        self._show_empty()
+
+    def _toggle_select(self):
+        self.set_select_mode(not self.select_mode)
+
+    def set_select_mode(self, on):
+        """Включает/выключает режим выбора с галочками."""
+        self.select_mode = bool(on)
+        if not self.select_mode:
+            self.checked.clear()
+        self.btn_select.setText('Отмена' if self.select_mode else 'Выбрать...')
+        self.btn_delete_selected.setVisible(self.select_mode)
+        self.btn_clear.setVisible(not self.select_mode)
+        for row in self._rows.values():
+            try:
+                row.set_selectable(
+                    self.select_mode,
+                    row.entry.get('doc_id') in self.checked)
+            except RuntimeError:
+                continue
+        self._sync_delete_button()
+
+    def _on_row_check(self, doc_id, checked):
+        if doc_id is None:
+            return
+        if checked:
+            self.checked.add(doc_id)
+        else:
+            self.checked.discard(doc_id)
+        self._sync_delete_button()
+
+    def _on_item_activated(self, item):
+        """Двойной клик/Enter в режиме выбора переключает галочку."""
+        if not self.select_mode:
+            return
+        row = self.list.itemWidget(item)
+        if isinstance(row, DownloadRow):
+            row.check.toggle()
+
+    def _sync_delete_button(self):
+        self.btn_delete_selected.setEnabled(bool(self.checked))
+
+    def selected_doc_ids(self):
+        return set(self.checked)
+
+    def clear_selection(self):
+        self.checked.clear()
+        for row in self._rows.values():
+            try:
+                row.set_selectable(self.select_mode, False)
+            except RuntimeError:
+                continue
+        self._sync_delete_button()
 
     def set_entries(self, entries):
         """Показывает список загрузок.
@@ -1800,16 +2007,29 @@ class DownloadsView(QWidget):
         if not entries:
             self._show_empty()
             return
+        self.btn_select.setEnabled(True)
+        # Записи могли исчезнуть, пока были отмечены.
+        current = {e.get('doc_id') for e in entries
+                   if e.get('doc_id') is not None}
+        self.checked &= current
+        self._sync_delete_button()
+
         names = [e.get('file') or e.get('name') for e in entries]
         if names != list(self._rows) or self.list.count() != len(names):
             self.list.clear()
             self._rows = {}
             for e in entries:
+                doc_id = e.get('doc_id')
                 item = QListWidgetItem('')
                 item.setData(Qt.ItemDataRole.UserRole, e.get('file'))
-                item.setSizeHint(QSize(0, DownloadRow.ROW_H))
+                item.setSizeHint(QSize(0, DownloadRow.row_height()))
                 self.list.addItem(item)
-                row = DownloadRow(e, self._on_action)
+                row = DownloadRow(
+                    e, self._on_action,
+                    on_check=(lambda checked, d=doc_id:
+                              self._on_row_check(d, checked)),
+                    selectable=self.select_mode,
+                    checked=doc_id in self.checked)
                 self.list.setItemWidget(item, row)
                 self._rows[e.get('file')] = row
             return
@@ -1817,6 +2037,8 @@ class DownloadsView(QWidget):
             row = self._rows.get(e.get('file'))
             if row is not None:
                 row.update_entry(e)
+                row.set_selectable(
+                    self.select_mode, e.get('doc_id') in self.checked)
 
     def _on_action(self, entry, action):
         cb = getattr(self, 'on_action', None)
@@ -1889,19 +2111,37 @@ class DownloadRow(QWidget):
     # Отступ значка от правого края, как в строке ролика.
     ICON_GAP = 10
 
-    def __init__(self, entry, on_action, parent=None):
+    @classmethod
+    def row_height(cls):
+        """Высота строки с учётом масштаба интерфейса."""
+        return theme.scale_px(cls.ROW_H)
+
+    def __init__(self, entry, on_action, parent=None, on_check=None,
+                 selectable=False, checked=False):
         super().__init__(parent)
         self.entry = dict(entry)
         self._on_action = on_action
+        self._on_check = on_check
+        self._selectable = False
+        self._text_left = theme.scale_px(6)
+        self._text_x = self._text_left
+        self._check_x = theme.scale_px(8)
+        self._check_size = theme.scale_px(18)
+        self._check_gap = theme.scale_px(8)
+        self._btn_w = theme.scale_px(self.BTN_W)
+        self._bar_w = theme.scale_px(self.BAR_W)
+        self._row_extra = theme.scale_px(self.ROW_EXTRA)
+        self._icon_gap = theme.scale_px(self.ICON_GAP)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
-        self.setMinimumHeight(self.ROW_H)
+        self.setMinimumHeight(self.row_height())
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Preferred)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 3, 6, 3)
-        lay.setSpacing(6)
+        lay.setContentsMargins(0, theme.scale_px(3),
+                               theme.scale_px(6), theme.scale_px(3))
+        lay.setSpacing(theme.scale_px(6))
         lay.addStretch(1)
         # Значок ставим по координатам: подложка выделения выше виджета
         # на поля строки списка, и раскладка центрировала бы значок по
@@ -1910,16 +2150,51 @@ class DownloadRow(QWidget):
         self.badge.raise_()
         self._place_badge()
         self.badge.clicked.connect(self._clicked)
+
+        self.check = QCheckBox(self)
+        self.check.setStyleSheet('QCheckBox { background: transparent; }')
+        self.check.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check.setToolTip('Выбрать загрузку')
+        self.check.toggled.connect(self._on_toggled)
+        self.set_selectable(selectable, checked)
         self._refresh_badge()
+
+    def set_selectable(self, on, checked=False):
+        """Включает/выключает галочку выбора загрузки."""
+        self._selectable = bool(on)
+        self.check.blockSignals(True)
+        self.check.setChecked(bool(checked))
+        self.check.blockSignals(False)
+        self.check.setVisible(self._selectable)
+        self._text_x = (self._check_x + self._check_size + self._check_gap
+                        if self._selectable else self._text_left)
+        self._place_check()
+        self.update()
+
+    def _place_check(self):
+        size = self._check_size
+        self.check.setFixedSize(size, size)
+        self.check.move(self._check_x, max(0, (self.height() - size) // 2))
+        self.check.raise_()
+
+    def _on_toggled(self, checked):
+        if self._on_check is not None:
+            self._on_check(bool(checked))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_check()
 
     def _place_badge(self):
         self.badge.move(
-            self.width() - self.ICON_GAP - self.BTN_W,
-            (self.height() - self.BTN_W) // 2 + self.ROW_EXTRA // 2)
+            self.width() - self._icon_gap - self._btn_w,
+            (self.height() - self._btn_w) // 2 + self._row_extra // 2)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._place_badge()
+        self._place_check()
         self.badge.raise_()
 
     def _refresh_badge(self):
@@ -1984,39 +2259,40 @@ class DownloadRow(QWidget):
                 sub = f'{sub} · {size_text}'
 
         font = QFont(self.font())
-        font.setPixelSize(13)
+        font.setPixelSize(theme.scale_px(13))
         p.setFont(font)
         fm = p.fontMetrics()
         small = QFont(self.font())
-        small.setPixelSize(10)
+        small.setPixelSize(theme.scale_px(10))
         fm_small = QFontMetrics(small)
 
         # Справа — значок, слева от него полоса прогресса (пока идёт
         # загрузка или она на паузе), ещё левее — подписи. Ширину
         # подписей считаем свою: иначе они стояли бы не там, где
         # кончается название.
-        right = self.BTN_W + self.ICON_GAP
+        right = self._btn_w + self._icon_gap
         if state in ('busy', 'paused'):
-            right += self.BAR_W + 8
+            right += self._bar_w + theme.scale_px(8)
         sub_w = max(fm_small.horizontalAdvance(sub),
-                    fm_small.horizontalAdvance(speed_text)) + 10
+                    fm_small.horizontalAdvance(speed_text)) + theme.scale_px(10)
         # Центр строки по вертикали — тот же, что у значка: выделение
         # выше виджета на поля строки списка.
-        center_y = (self.height() + self.ROW_EXTRA) // 2
+        center_y = (self.height() + self._row_extra) // 2
 
         # Две строки текста (название и канал) стоят блоком по центру
         # выделения. Считаем общую высоту блока и рисуем сверху вниз,
         # поэтому канал больше не уезжает за нижний край строки.
-        line_gap = 1
+        line_gap = theme.scale_px(1)
         total_h = fm.height() + line_gap + fm_small.height()
         block_top = center_y - total_h // 2
         title_y = block_top + fm.ascent()
         p.setFont(font)
         p.setPen(color)
         title = str(self.entry.get('name') or '')
-        avail = self.width() - 6 - right - sub_w
+        left_pad = self._text_x
+        avail = self.width() - left_pad - right - sub_w
         elided = fm.elidedText(title, Qt.TextElideMode.ElideRight, avail)
-        p.drawText(QPoint(6, title_y), elided)
+        p.drawText(QPoint(left_pad, title_y), elided)
 
         # Канал — мелким текстом сразу под названием: по нему видно,
         # из какого канала ролик. Рисуем до подписи состояния и ПОСЛЕ
@@ -2028,18 +2304,24 @@ class DownloadRow(QWidget):
             chan_elided = fm_small.elidedText(
                 channel, Qt.TextElideMode.ElideRight, avail)
             chan_y = block_top + fm.height() + line_gap + fm_small.ascent()
-            p.drawText(QPoint(6, chan_y), chan_elided)
+            p.drawText(QPoint(left_pad, chan_y), chan_elided)
 
         # Подписи справа — тоже блоком по центру строки: объём сверху,
-        # скорость под ним. Рисуем после установки шрифта и пера.
+        # скорость под ним. Центрируем ВЕСЬ блок из двух строк, а не
+        # первую: раньше вторая строка прижималась к нижнему краю и
+        # выглядела обрезанной. Рисуем после установки шрифта и пера.
         p.setPen(QColor(color.red(), color.green(), color.blue(), 170))
-        sub_x = self.width() - 6 - right
-        sub_top = center_y - fm_small.height() // 2
+        sub_x = self.width() - theme.scale_px(6) - right
+        sub_h = fm_small.height() * (2 if speed_text else 1)
+        if speed_text:
+            sub_h += line_gap
+        sub_top = center_y - sub_h // 2
         p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub),
                           sub_top + fm_small.ascent()), sub)
         if speed_text:
             p.setPen(QColor(color.red(), color.green(), color.blue(), 210))
-            speed_y = sub_top + fm_small.height() + fm_small.ascent()
+            speed_y = (sub_top + fm_small.height() + line_gap
+                       + fm_small.ascent())
             p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(speed_text),
                               speed_y), speed_text)
         p.end()
@@ -2048,8 +2330,9 @@ class DownloadRow(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w, h = self.BAR_W, 4
-        x = self.width() - w - 6 - self.BTN_W - 6
+        w, h = self._bar_w, theme.scale_px(4)
+        gap = theme.scale_px(6)
+        x = self.width() - w - gap - self._btn_w - gap
         y = (self.height() - h) // 2
         try:
             accent = QColor(theme.theme()['accent'])
@@ -2078,6 +2361,62 @@ class _RowLabel(QLabel):
         self.setVisible(False)
 
 
+class SearchLineEdit(QLineEdit):
+    """Строка поиска с крестиком, который подсвечивается при наведении.
+
+    Встроенный clear-button Qt берёт цвет у системного стиля: на тёмной
+    теме крестик почти сливается с полем. Своя кнопка использует цвет
+    темы и даёт нормальную подсветку под курсором.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._clear = QToolButton(self)
+        self._clear.setIcon(icons.get_icon('close'))
+        self._clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._clear.setToolTip('Очистить')
+        self._clear.clicked.connect(self.clear)
+        self.textChanged.connect(self._sync_clear)
+        self.refit()
+        self._clear.hide()
+
+    def refit(self):
+        """Пересчитывает крестик под текущий масштаб интерфейса."""
+        icon_px = theme.scale_px(14)
+        self._clear.setIconSize(QSize(icon_px, icon_px))
+        radius = theme.scale_px(9)
+        self._clear.setStyleSheet(
+            "QToolButton { background: transparent; border: none;"
+            f" border-radius: {radius}px; }}"
+            "QToolButton:hover { background: rgba(128, 128, 128, 0.30); }"
+            "QToolButton:pressed { background: rgba(128, 128, 128, 0.45); }"
+        )
+        # Место под крестик: иначе текст уезжает под кнопку.
+        self.setTextMargins(0, 0, theme.scale_px(24), 0)
+        self._place_clear()
+
+    def _sync_clear(self, text):
+        self._clear.setVisible(bool(text))
+        self._place_clear()
+
+    def _place_clear(self):
+        size = theme.scale_px(18)
+        self._clear.setFixedSize(size, size)
+        x = max(0, self.width() - size - theme.scale_px(6))
+        y = max(0, (self.height() - size) // 2)
+        self._clear.move(x, y)
+        self._clear.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_clear()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_clear()
+
+
 class MainWindow(QMainWindow):
     # Результат проверки обновлений из фонового потока.
     #
@@ -2103,6 +2442,9 @@ class MainWindow(QMainWindow):
         self.player_window = None
         self._active_dialog_id = None
         self._preload_doc_id = None
+        # Режим выбора записей истории: включается кнопкой «Выбрать...».
+        self._history_selecting = False
+        self._history_checked = set()
         # Названия роликов текущего канала: по ним заново собирается список
         # с пометками, когда что-то посмотрели.
         self._video_titles = []
@@ -2181,7 +2523,7 @@ class MainWindow(QMainWindow):
         # не хватало места.
         top_bar.addWidget(self.folder_combo, TOPBAR_FOLDER_STRETCH)
 
-        self.channel_search = QLineEdit()
+        self.channel_search = SearchLineEdit()
         self.channel_search.setPlaceholderText(
             "Поиск: свои каналы и весь Telegram...")
         self.channel_search.textChanged.connect(self._on_channel_query)
@@ -2203,8 +2545,9 @@ class MainWindow(QMainWindow):
         self.btn_settings.setObjectName("settingbtn")
         self.btn_settings.setToolTip("Настройки")
         self.btn_settings.setIcon(icons.gear_icon())
-        self.btn_settings.setIconSize(QSize(18, 18))
-        self.btn_settings.setFixedSize(34, 30)
+        self.btn_settings.setIconSize(
+            QSize(theme.scale_px(18), theme.scale_px(18)))
+        self.btn_settings.setFixedSize(theme.scale_px(34), theme.scale_px(30))
         self.btn_settings.clicked.connect(self.open_settings)
         top_bar.addWidget(self.btn_settings)
 
@@ -2230,7 +2573,8 @@ class MainWindow(QMainWindow):
 
         # Список каналов
         self.channel_list = QListWidget()
-        self.channel_list.setIconSize(QSize(28, 28))
+        self.channel_list.setIconSize(
+            QSize(theme.scale_px(28), theme.scale_px(28)))
         # Горизонтальная прокрутка не нужна: длинные названия и так
         # обрезаются с подсказкой, а полоса только съедала высоту снизу.
         self.channel_list.setHorizontalScrollBarPolicy(
@@ -2251,7 +2595,7 @@ class MainWindow(QMainWindow):
         video_lay.setSpacing(4)
 
         video_bar = QHBoxLayout()
-        self.video_search = QLineEdit()
+        self.video_search = SearchLineEdit()
         self.video_search.setPlaceholderText("Поиск видео...")
         self.video_search.textChanged.connect(
             lambda *_: self._render_video_list())
@@ -2282,7 +2626,11 @@ class MainWindow(QMainWindow):
             self._on_video_menu)
         # itemActivated срабатывает и на Enter, и на двойной клик.
         self.video_list.itemActivated.connect(self.open_player)
-        self.video_list.currentRowChanged.connect(self.on_video_selected)
+        # Выделение строки больше НЕ запускает загрузку. Раньше здесь
+        # висел on_video_selected, и одно нажатие/ПКМ по ролику начинало
+        # качать его начало. Скачивание теперь только по кнопке, при
+        # запуске видео, по «Скачать» в истории — и префетч следующего
+        # ролика после полной докачки текущего (он живёт в плеере).
         # Загрузка в кэш по значку, и состояние строк при наведении курсора.
         self._cache_rows = {}          # индекс ролика -> VideoRow
         self._cache_state = {}         # doc_id -> ('busy'|'done', доля)
@@ -2327,6 +2675,8 @@ class MainWindow(QMainWindow):
         self.downloads_view.on_action = self._downloads_action
         self.btn_clear_downloads = self.downloads_view.btn_clear
         self.btn_clear_downloads.clicked.connect(self._clear_done_downloads)
+        self.downloads_view.btn_delete_selected.clicked.connect(
+            self._delete_selected_downloads)
         self._dl_timer = QTimer(self)
         self._dl_timer.setInterval(700)
         self._dl_timer.timeout.connect(self._refresh_downloads_view)
@@ -2335,9 +2685,56 @@ class MainWindow(QMainWindow):
         dl_lay.setContentsMargins(9, 9, 9, 9)
         dl_lay.addWidget(self.downloads_view)
 
+        # Вкладка истории просмотров. Список наполняется при открытии
+        # вкладки: история меняется редко, а пересобирать её на каждый
+        # тик незачем.
+        self.history_tab = QWidget()
+        hist_lay = QVBoxLayout(self.history_tab)
+        hist_lay.setContentsMargins(9, 9, 9, 9)
+        self.history_list = QListWidget()
+        self.history_list.setSelectionMode(
+            QListWidget.SelectionMode.SingleSelection)
+        self.history_list.setUniformItemSizes(False)
+        self.history_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history_list.setItemDelegate(RowDelegate(24, self.history_list))
+        self.history_list.itemActivated.connect(self._open_history_item)
+        self.history_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(
+            self._on_history_menu)
+
+        hist_lay.addWidget(self.history_list, 1)
+
+        # Нижняя полоса — как на вкладке загрузок: слева режим выбора,
+        # справа очистка всей истории.
+        self.btn_select_history = QPushButton('Выбрать...')
+        self.btn_select_history.setToolTip(
+            'Выбрать несколько записей для удаления')
+        self.btn_select_history.clicked.connect(
+            self._toggle_history_selection)
+        self.btn_delete_history_selected = QPushButton('Удалить выбранные')
+        self.btn_delete_history_selected.setEnabled(False)
+        self.btn_delete_history_selected.hide()
+        self.btn_delete_history_selected.clicked.connect(
+            self._delete_selected_history)
+        self.btn_clear_history = QPushButton('Очистить историю')
+        self.btn_clear_history.setToolTip(
+            'Удалить все записи вкладки «История»')
+        self.btn_clear_history.setEnabled(False)
+        self.btn_clear_history.clicked.connect(self._clear_history)
+
+        hist_bottom = QHBoxLayout()
+        hist_bottom.addWidget(self.btn_select_history)
+        hist_bottom.addWidget(self.btn_delete_history_selected)
+        hist_bottom.addStretch(1)
+        hist_bottom.addWidget(self.btn_clear_history)
+        hist_lay.addLayout(hist_bottom)
+
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName('maintabs')
         self.main_tabs.addTab(splitter, 'Каналы')
+        self.main_tabs.addTab(self.history_tab, 'История')
         # Вкладка загрузок есть всегда: раньше она появлялась и
         # исчезала по наличию записей в кэше, и в момент, когда
         # загрузка уже шла, её иногда просто не было в окне.
@@ -2380,6 +2777,7 @@ class MainWindow(QMainWindow):
         self.backend.error_occurred.connect(self.show_error)
         self.backend.login_step.connect(self._on_login_step)
         self.backend.search_results.connect(self._show_search_results)
+        self.backend.history_message.connect(self._on_history_message)
 
         # Строка состояния: высота выводится из шрифта (см. ThinStatusBar),
         # поля по бокам заданы там же, ручки размера в углу нет.
@@ -2395,6 +2793,9 @@ class MainWindow(QMainWindow):
         self.conn_menu.set_status("Подключение...")
         self.conn_button = CornerConnectionButton(self)
         self.conn_button.clicked.connect(self._open_connection_menu)
+        # Значок соединения нужен только на «Каналах». На истории и
+        # загрузках он висел в углу поверх нижнего края и мешал.
+        self.conn_button.setVisible(self.main_tabs.currentIndex() == 0)
         self._connected = False
         self._conn_state = 'off'
         try:
@@ -2885,6 +3286,57 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(theme.build_style_scaled())
+
+        # Свои paintEvent'ы не берут шрифт из таблицы стилей: у строк
+        # роликов, загрузок и истории размеры заданы кодом. Обновляем
+        # элементы управления и пересобираем строки, иначе при смене
+        # масштаба они остаются прежнего размера.
+        if getattr(self, 'channel_search', None) is not None:
+            try:
+                self.channel_search.refit()
+                self.video_search.refit()
+            except Exception:
+                pass
+        if getattr(self, 'btn_settings', None) is not None:
+            try:
+                icon_px = theme.scale_px(18)
+                self.btn_settings.setIconSize(QSize(icon_px, icon_px))
+                self.btn_settings.setFixedSize(theme.scale_px(34),
+                                               theme.scale_px(30))
+            except Exception:
+                pass
+        if getattr(self, 'channel_list', None) is not None:
+            try:
+                icon_px = theme.scale_px(28)
+                self.channel_list.setIconSize(QSize(icon_px, icon_px))
+                self.channel_list.setItemDelegate(
+                    RowDelegate(28, self.channel_list))
+                self.video_list.setItemDelegate(
+                    RowDelegate(24, self.video_list))
+                self.history_list.setItemDelegate(
+                    RowDelegate(24, self.history_list))
+            except Exception:
+                pass
+        # При первом вызове из __init__ список роликов ещё не создан:
+        # стиль уже применён, а пересобирать пока нечего.
+        if getattr(self, 'video_list', None) is not None:
+            try:
+                if getattr(self, 'current_dialogs', None):
+                    self.filter_channels()
+                else:
+                    self._restore_open_channel()
+            except Exception as ex:
+                print(f"[Тема] Список каналов не пересобрать: {ex}")
+        try:
+            self._refresh_history()
+        except Exception:
+            pass
+        if getattr(self, 'downloads_view', None) is not None:
+            try:
+                self.downloads_view.reset()
+                self._refresh_downloads_view()
+            except Exception as ex:
+                print(f"[Тема] Загрузки не пересобрать: {ex}")
         # Шрифт из стиля доходит до надписи только сейчас, поэтому высоту
         # строки состояния пересчитываем здесь, а не при её создании.
         try:
@@ -3117,7 +3569,18 @@ class MainWindow(QMainWindow):
         обновлении с чужого компьютера видно только «не обновилось», а
         причины нет: в нём записано, нашёлся ли прежний путь, был ли
         режим тихим и запустился ли плеер после установки.
+
+        Мьютекс плеера установщик не проверяет директивой AppMutex:
+        в тихом режиме он сам отвечал на этот вопрос «Отмена», и
+        установка обрывалась до копирования файлов (подробнее — в
+        комментарии к CloseApplications в installer/tgplayer.iss).
+        Вместо этого установщик ждёт, пока мьютекс исчезнет.
         """
+        # Флаг ставим ДО запуска установщика. Пока он стартует, Restart
+        # Manager может прислать окну WM_CLOSE; с этим флагом крестик
+        # закрывает программу по-настоящему, а не сворачивает в трей.
+        # Иначе старый плеер оставался бы жить и держать Tegr.exe.
+        self._really_quit = True
         try:
             log_path = os.path.splitext(path)[0] + '_install.log'
             # Кавычки нужны: во временной папке бывает пробел в имени
@@ -3131,6 +3594,9 @@ class MainWindow(QMainWindow):
             # человек нажал «Нет» в UAC, приходит 5 (ERROR_ACCESS_DENIED) —
             # это не сбой, и незачем пугать его красной ошибкой.
             if result <= 32:
+                # Установка не началась — возвращаем обычное поведение
+                # крестика: иначе он перестал бы сворачивать в трей.
+                self._really_quit = False
                 if result == 5:
                     print("[Обновление] установка отменена в окне UAC")
                     self.update_banner.show_ready()
@@ -3139,6 +3605,7 @@ class MainWindow(QMainWindow):
                     return
                 raise OSError(f'ShellExecute вернул {result}')
         except Exception as ex:
+            self._really_quit = False
             print(f"[Обновление] установщик не запустился: {ex}")
             self.update_banner.show_error(str(ex))
             return
@@ -3492,20 +3959,21 @@ class MainWindow(QMainWindow):
 
         mine = []
         for d in getattr(self, 'current_dialogs', []):
-            name = (getattr(d, 'name', '')
-                    or getattr(getattr(d, 'entity', None), 'title', '') or '')
+            name = self._dialog_display_name(d)
             if not query or query in name.lower():
                 mine.append(d)
-        # Каналы без видео уходят вниз: это не мусор, но и открывать их
-        # незачем. Внутри каждой группы порядок прежний — избранное
-        # сверху, остальное как пришло из Telegram.
-        #
-        # Сортировка стабильная, поэтому равные элементы остаются на своих
-        # местах — внутри «с видео» и «без видео» порядок не меняется.
-        # Ответ фоновой проверки приходит по каналам вразнобой, и без этого
-        # список перетасовывался бы на каждой порции.
-        mine.sort(key=lambda d: (self._empty_note(d) != '',
-                                 0 if self._is_favorite(d) else 1))
+        # Внутри групп — по алфавиту. Избранное остаётся сверху, каналы
+        # без видео — внизу: это осознанные группы, и ломать их ради
+        # строгого алфавита было бы хуже. QCollator учитывает локаль, а
+        # не коды Unicode: иначе «Ё» уезжала бы после «Я».
+        collator = QCollator()
+        collator.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        collator.setNumericMode(True)
+        mine.sort(key=lambda d: (
+            self._empty_note(d) != '',
+            0 if self._is_favorite(d) else 1,
+            collator.sortKey(self._dialog_display_name(d)),
+        ))
         self._empty_shown = sum(1 for d in mine if self._empty_note(d))
 
         self.channel_list.blockSignals(True)
@@ -3516,10 +3984,10 @@ class MainWindow(QMainWindow):
         self._search_rows = []
 
         for d in mine:
-            name = (getattr(d, 'name', '')
-                    or getattr(getattr(d, 'entity', None), 'title', '') or '')
+            name = self._dialog_display_name(d)
             mark = '★ ' if self._is_favorite(d) else ''
-            item = QListWidgetItem(icons.get_avatar_icon(name), mark + name)
+            item = QListWidgetItem(
+                icons.get_avatar_icon(name, theme.scale_px(28)), mark + name)
             # Цвет у всех каналов один: раньше каналы без видео были серыми,
             # и список выглядел так, будто программа покрасила половину
             # строк случайно. «Нет видео» и так видно по месту в списке и по
@@ -3529,6 +3997,9 @@ class MainWindow(QMainWindow):
             self._search_rows.append(('mine', d))
 
         if self._search_results:
+            self._search_results.sort(
+                key=lambda f: collator.sortKey(
+                    getattr(f, 'title', '') or ''))
             self._add_list_note(
                 f"— Найдено в Telegram: {len(self._search_results)} —")
 
@@ -3542,7 +4013,8 @@ class MainWindow(QMainWindow):
             if not getattr(found, 'left', True):
                 # Уже подписан: подписываться второй раз незачем.
                 label = '✓ ' + label
-            item = QListWidgetItem(icons.get_avatar_icon(title), label)
+            item = QListWidgetItem(
+                icons.get_avatar_icon(title, theme.scale_px(28)), label)
             item.setToolTip(title)
             self.channel_list.addItem(item)
             self._search_rows.append(('found', found))
@@ -3578,6 +4050,7 @@ class MainWindow(QMainWindow):
             self._video_messages = []
             self._video_titles = []
             self._list_has_videos = False
+            self._cache_rows = {}
             self.video_list.clear()
             self.video_list.addItem("Выберите канал")
             self.btn_more.hide()
@@ -3606,6 +4079,13 @@ class MainWindow(QMainWindow):
         if not hasattr(flags, 'get'):
             return None
         return flags.get(dialog_id)
+
+    @staticmethod
+    def _dialog_display_name(dialog):
+        """Название канала для списка и сортировки."""
+        return (getattr(dialog, 'name', '')
+                or getattr(getattr(dialog, 'entity', None), 'title', '')
+                or '')
 
     def _empty_note(self, dialog):
         """Подпись «нет видео», если канал проверен и оказался пустым.
@@ -4015,6 +4495,9 @@ class MainWindow(QMainWindow):
             or getattr(getattr(dialog, 'entity', None), 'title', '')
         )
         self._preload_doc_id = None
+        # Старые строки сейчас удалятся вместе со значками — ссылки на
+        # них не должны пережить очистку (см. eventFilter).
+        self._cache_rows = {}
         self.video_list.clear()
         self._list_has_videos = False
         self.video_list.addItem("Загрузка видео...")
@@ -4079,6 +4562,11 @@ class MainWindow(QMainWindow):
         лежит в данных строки (UserRole). Пока они совпадали, всё работало
         случайно — после любого фильтра открывался бы не тот ролик.
         """
+        # Карту строк сбрасываем ДО очистки списка. clear() удаляет
+        # виджеты вместе с их DownloadBadge, а eventFilter и таймер
+        # кэша могут ещё держать старые ссылки — обращение к удалённому
+        # объекту даёт RuntimeError на каждом движении мыши.
+        self._cache_rows = {}
         self.video_list.clear()
         messages = list(getattr(self, '_video_messages', None) or [])
         titles = list(getattr(self, '_video_titles', None) or [])
@@ -4104,7 +4592,6 @@ class MainWindow(QMainWindow):
             return
 
         self._list_has_videos = True
-        self._cache_rows = {}
         for i, message, title in rows:
             mark = ''
             extra = ''
@@ -4126,7 +4613,7 @@ class MainWindow(QMainWindow):
             # Высота строки одна для всех: виджет в ней, а не картинка.
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
-            item.setSizeHint(QSize(0, VideoRow.ROW_H))
+            item.setSizeHint(QSize(0, VideoRow.row_height()))
             self.video_list.addItem(item)
             row = VideoRow(mark + title + extra, i, self._cache_action)
             self.video_list.setItemWidget(item, row)
@@ -4204,12 +4691,292 @@ class MainWindow(QMainWindow):
             self._dl_timer.start()
         else:
             self._dl_timer.stop()
+        # История меняется редко — пересобираем её при открытии вкладки,
+        # а не по таймеру.
+        if index == self._history_tab_index():
+            self._refresh_history()
+        # Значок соединения — только на «Каналах»: на истории и
+        # загрузках он не нужен и закрывает нижний край списка.
+        try:
+            self.conn_button.setVisible(index == 0)
+        except Exception:
+            pass
 
     def _downloads_tab_index(self):
         try:
             return self.main_tabs.indexOf(self.downloads_tab)
         except Exception:
             return -1
+
+    def _history_tab_index(self):
+        try:
+            return self.main_tabs.indexOf(self.history_tab)
+        except Exception:
+            return -1
+
+    def _refresh_history(self):
+        """Пересобирает вкладку истории из записей бэкенда."""
+        try:
+            target = self.history_list
+        except AttributeError:
+            return
+        target.clear()
+        entries = getattr(self.backend, 'history_entries', None)
+        records = list(entries.values()) if isinstance(entries, dict) else []
+        records.sort(key=lambda r: float(r.get('watched_at') or 0),
+                     reverse=True)
+        current = {r.get('doc_id') for r in records
+                   if r.get('doc_id') is not None}
+        self._history_checked &= current
+
+        select_btn = getattr(self, 'btn_select_history', None)
+        if select_btn is not None:
+            select_btn.setText('Отмена' if self._history_selecting
+                               else 'Выбрать...')
+            select_btn.setEnabled(bool(records) or self._history_selecting)
+        del_btn = getattr(self, 'btn_delete_history_selected', None)
+        if del_btn is not None:
+            del_btn.setVisible(self._history_selecting)
+            del_btn.setEnabled(bool(self._history_checked))
+        clear_btn = getattr(self, 'btn_clear_history', None)
+        if clear_btn is not None:
+            clear_btn.setVisible(not self._history_selecting)
+            clear_btn.setEnabled(bool(records))
+
+        if not records:
+            item = QListWidgetItem('История просмотров пуста')
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            try:
+                item.setForeground(QColor(theme.theme()['text_dim']))
+            except Exception:
+                pass
+            target.addItem(item)
+            return
+        for record in records:
+            doc_id = record.get('doc_id')
+            if doc_id is None:
+                continue
+            title = record.get('title') or f'Видео #{doc_id}'
+            meta = self._history_meta(record)
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, doc_id)
+            item.setSizeHint(QSize(0, HistoryRow.row_height()))
+            target.addItem(item)
+            target.setItemWidget(item, HistoryRow(
+                title, meta,
+                on_check=lambda checked, d=doc_id:
+                    self._on_history_check(d, checked),
+                selectable=self._history_selecting,
+                checked=doc_id in self._history_checked))
+
+    @staticmethod
+    def _history_meta(record):
+        """Вторая строка истории: канал, прогресс и дата."""
+        parts = [str(record.get('channel') or 'канал неизвестен')]
+        pos = float(record.get('position') or 0)
+        dur = float(record.get('duration') or 0)
+        if dur > 0 and pos > 0:
+            parts.append(f'{utils.format_time(pos * 1000)} / '
+                         f'{utils.format_time(dur * 1000)}')
+        elif dur > 0:
+            parts.append(utils.format_time(dur * 1000))
+        elif pos > 0:
+            parts.append(f'на {utils.format_time(pos * 1000)}')
+        ts = float(record.get('watched_at') or 0)
+        if ts > 0:
+            try:
+                parts.append(time.strftime('%d.%m.%Y %H:%M',
+                                           time.localtime(ts)))
+            except Exception:
+                pass
+        return ' · '.join(parts)
+
+    def _open_history_item(self, item):
+        """Открывает ролик из истории: из текущего канала или запросом."""
+        if item is None:
+            return
+        if self._history_selecting:
+            # В режиме выбора активация строки переключает галочку, а
+            # не открывает плеер.
+            widget = self.history_list.itemWidget(item)
+            if widget is not None:
+                widget.check.toggle()
+            return
+        doc_id = item.data(Qt.ItemDataRole.UserRole)
+        records = getattr(self.backend, 'history_entries', None) or {}
+        record = records.get(doc_id)
+        if not isinstance(record, dict):
+            return
+
+        # Ролик уже загружен в открытом канале — играем без сети.
+        messages = list(getattr(self, '_video_messages', None) or [])
+        for index, message in enumerate(messages):
+            try:
+                if message.media.document.id == doc_id:
+                    self._play_messages(
+                        messages, index,
+                        record.get('channel')
+                        or self.backend.active_dialog_title)
+                    return
+            except Exception:
+                continue
+
+        # Другой канал: нужен свежий Message с file_reference.
+        if (record.get('peer_id') is None
+                or record.get('message_id') is None):
+            self.set_status('Этот ролик больше недоступен')
+            return
+        self.set_status('Открываю ролик из истории...')
+        self.backend.fetch_history_message(record)
+
+    def _on_history_message(self, record, message):
+        """Пришло сообщение из истории (или None, если его больше нет)."""
+        document = getattr(getattr(message, 'media', None), 'document', None)
+        if message is None or document is None:
+            self.set_status('Не удалось открыть ролик из истории')
+            return
+        self._play_messages([message], 0,
+                            (record or {}).get('channel') or '')
+
+    def _on_history_menu(self, pos):
+        """ПКМ по записи истории: открыть, скачать или удалить."""
+        item = self.history_list.itemAt(pos)
+        if item is None:
+            return
+        doc_id = item.data(Qt.ItemDataRole.UserRole)
+        records = getattr(self.backend, 'history_entries', None) or {}
+        record = records.get(doc_id)
+        if not isinstance(record, dict):
+            return
+
+        menu = QMenu(self)
+        act_goto = menu.addAction('Перейти к ролику на канале')
+        act_download = menu.addAction('Скачать')
+        menu.addSeparator()
+        act_delete = menu.addAction('Удалить')
+        menu.setStyleSheet(theme.build_style())
+        chosen = menu.exec(self.history_list.viewport().mapToGlobal(pos))
+        if chosen is act_goto:
+            self._goto_video(record)
+        elif chosen is act_download:
+            self.set_status('Скачиваю ролик из истории...')
+            self.backend.download_history_message(record)
+        elif chosen is act_delete:
+            self._delete_history(record)
+
+    def _delete_history(self, record):
+        """Удаляет одну запись из журнала просмотров."""
+        title = record.get('title') or 'ролик'
+        answer = QMessageBox.question(
+            self, 'История',
+            f'Удалить «{title}» из истории?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.backend.forget_history(record.get('doc_id'))
+        self._history_checked.discard(record.get('doc_id'))
+        self._refresh_history()
+        self.set_status('Запись удалена из истории')
+
+    def _clear_history(self):
+        """Кнопка «Очистить историю»: убирает все записи вкладки."""
+        records = getattr(self.backend, 'history_entries', None)
+        if not records:
+            return
+        answer = QMessageBox.question(
+            self, 'История',
+            'Очистить историю просмотров?\n\n'
+            'Пометки «просмотрено» и места просмотра сохранятся.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._history_selecting = False
+        self._history_checked.clear()
+        self.backend.clear_history()
+        self._refresh_history()
+        self.set_status('История просмотров очищена')
+
+    def _toggle_history_selection(self):
+        """Кнопка «Выбрать...»: включает галочки у записей истории."""
+        if (not self._history_selecting
+                and not getattr(self.backend, 'history_entries', None)):
+            return
+        self._history_selecting = not self._history_selecting
+        if not self._history_selecting:
+            self._history_checked.clear()
+        self._refresh_history()
+
+    def _on_history_check(self, doc_id, checked):
+        if doc_id is None:
+            return
+        if checked:
+            self._history_checked.add(doc_id)
+        else:
+            self._history_checked.discard(doc_id)
+        button = getattr(self, 'btn_delete_history_selected', None)
+        if button is not None:
+            button.setEnabled(bool(self._history_checked))
+
+    def _delete_selected_history(self):
+        """Удаляет отмеченные записи истории одним действием."""
+        ids = set(self._history_checked)
+        if not ids:
+            return
+        answer = QMessageBox.question(
+            self, 'История',
+            f'Удалить выбранные записи: {len(ids)}?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for doc_id in ids:
+            self.backend.forget_history(doc_id)
+        self._history_checked.clear()
+        self._history_selecting = False
+        self._refresh_history()
+        self.set_status(f'Удалено записей: {len(ids)}')
+
+    def _play_messages(self, messages, index, channel_title=''):
+        """Открывает ролик из произвольного списка сообщений.
+
+        Обычный список канала приходит из backend.current_messages, а
+        история может открыть один ролик из другого канала. Плееру в
+        обоих случаях нужен свой закреплённый плейлист.
+        """
+        messages = list(messages or [])
+        if not messages or index < 0 or index >= len(messages):
+            return
+        channel_title = (channel_title
+                         or getattr(self.backend, 'active_dialog_title', '')
+                         or '')
+        self._preload_doc_id = None
+        pw = self.player_window
+        if pw is not None:
+            pw.set_playlist(messages)
+            pw.set_channel_title(channel_title)
+            if pw.pip_window.isVisible():
+                pw.play_video(index)
+            else:
+                pw.show()
+                pw.raise_()
+                pw.activateWindow()
+                QTimer.singleShot(0, lambda: self._start_playback(pw, index))
+            return
+
+        self.player_window = PlayerWindow(
+            self.backend, index, None, playlist=messages,
+            channel_title=channel_title)
+        self.player_window.sig_closed.connect(self._on_player_closed)
+        self.player_window.sig_watched.connect(self._render_video_list)
+        self.player_window.sig_history.connect(self._refresh_history)
+        self.player_window.show()
+        self.player_window.activateWindow()
+        self.player_window.setFocus()
+        pw = self.player_window
+        QTimer.singleShot(0, lambda: self._start_playback(pw, index))
 
     def _download_entries(self):
         """Собирает список загрузок: сначала активные, потом скачанные.
@@ -4396,6 +5163,57 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(200, self._refresh_downloads_view)
         QTimer.singleShot(200, self._refresh_cache_rows)
 
+    def _delete_selected_downloads(self):
+        """Удаляет отмеченные загрузки: готовые файлы и незавершённые."""
+        ids = set(self.downloads_view.selected_doc_ids())
+        if not ids:
+            return
+
+        # Играющий и следующий ролики не трогаем: удаление файла
+        # из-под mpv — это чёрный кадр и ошибки воспроизведения.
+        keep = set()
+        pw = self.player_window
+        if pw is not None and not getattr(pw, '_closed', True):
+            for attr in ('_current_doc_id', '_next_doc_id'):
+                doc_id = getattr(pw, attr, None)
+                if doc_id is not None:
+                    keep.add(doc_id)
+        skipped = ids & keep
+        ids -= keep
+        if not ids:
+            self.set_status('Играющий ролик не удаляю')
+            return
+
+        answer = QMessageBox.question(
+            self, 'Загрузки',
+            f'Удалить выбранные загрузки: {len(ids)}?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        by_id = {e.get('doc_id'): e for e in self._download_entries()}
+        for doc_id in ids:
+            entry = by_id.get(doc_id) or {}
+            if entry.get('state') == 'done':
+                self._cache_stopped.discard(doc_id)
+                self.backend.delete_cached_file(doc_id)
+            else:
+                # Недокачанное или приостановленное: отмена стирает
+                # и частичный файл, и запись в кэше.
+                self._cache_stopped.add(doc_id)
+                self._unpin_doc(doc_id)
+                self.backend.cancel_user_download(doc_id)
+
+        self.downloads_view.clear_selection()
+        self.downloads_view.set_select_mode(False)
+        self._refresh_downloads_view()
+        self._refresh_cache_rows()
+        text = f'Удалено загрузок: {len(ids)}'
+        if skipped:
+            text += f' · играющий не тронут: {len(skipped)}'
+        self.set_status(text)
+
     def _entry_message(self, doc_id, entry):
         """Сообщение для докачки: из кэша, из записи или из канала."""
         try:
@@ -4433,8 +5251,27 @@ class MainWindow(QMainWindow):
             pass
         self.backend.submit_coroutine(
             self.backend.ensure_cache(
-                message, workers=config.PARALLEL_WORKERS, resume=True))
+                message, workers=config.DOWNLOAD_WORKERS, resume=True))
         print(f"[Кэш] Загрузка продолжена: {doc_id}")
+
+    @staticmethod
+    def _peer_id_int(peer):
+        """Приводит peer_id к помеченному числу (-100... для каналов)."""
+        if peer is None or isinstance(peer, int):
+            return peer
+        channel_id = getattr(peer, 'channel_id', None)
+        if channel_id is not None:
+            return -1000000000000 - int(channel_id)
+        chat_id = getattr(peer, 'chat_id', None)
+        if chat_id is not None:
+            return -int(chat_id)
+        user_id = getattr(peer, 'user_id', None)
+        if user_id is not None:
+            return int(user_id)
+        try:
+            return int(peer)
+        except (TypeError, ValueError):
+            return None
 
     def _goto_video(self, entry):
         """Открывает канал и показывает в списке тот самый ролик.
@@ -4443,7 +5280,7 @@ class MainWindow(QMainWindow):
         Переключаемся на «Каналы», выбираем канал и ставим выделение на
         строку ролика — дальше Enter или двойной клик открывает его.
         """
-        peer_id = entry.get('peer_id')
+        peer_id = self._peer_id_int(entry.get('peer_id'))
         message_id = entry.get('message_id')
         if peer_id is None:
             self.set_status('Неизвестно, из какого канала этот ролик')
@@ -4577,16 +5414,23 @@ class MainWindow(QMainWindow):
             message = self.backend.current_messages[row.index]
             doc = message.media.document
         except Exception:
-            row.set_state('idle')
+            try:
+                row.set_state('idle')
+            except RuntimeError:
+                pass
             return
         status = self._cache_status(doc.id)
         self._cache_state[doc.id] = status
-        if status is None:
-            row.set_state('idle')
-        elif status[0] == 'paused':
-            row.set_paused()
-        else:
-            row.set_state(status[0], status[1])
+        try:
+            if status is None:
+                row.set_state('idle')
+            elif status[0] == 'paused':
+                row.set_paused()
+            else:
+                row.set_state(status[0], status[1])
+        except RuntimeError:
+            # Строка удалена вместе со списком — обновлять нечего.
+            return
 
     def _refresh_cache_rows(self):
         """Обновляет значки всех строк — по таймеру, пока идёт загрузка."""
@@ -4603,13 +5447,20 @@ class MainWindow(QMainWindow):
                 busy = busy or status[0] == 'busy'
                 if self._cache_state.get(doc.id) != status:
                     self._cache_state[doc.id] = status
-                    if status[0] == 'paused':
-                        row.set_paused()
-                    else:
-                        row.set_state(status[0], status[1])
+                    try:
+                        if status[0] == 'paused':
+                            row.set_paused()
+                        else:
+                            row.set_state(status[0], status[1])
+                    except RuntimeError:
+                        # Строка уже удалена вместе со старым списком.
+                        continue
             elif self._cache_state.get(doc.id) is not None:
                 self._cache_state[doc.id] = None
-                row.set_state('idle')
+                try:
+                    row.set_state('idle')
+                except RuntimeError:
+                    continue
         # Пока хоть одна строка качается — проверяем чаще: полоса должна
         # двигаться на глазах. Когда всё стоит, таймер реже.
         self._cache_timer.setInterval(500 if busy else 2000)
@@ -4650,7 +5501,7 @@ class MainWindow(QMainWindow):
             self._stop_preload()
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
-                    message, workers=config.PARALLEL_WORKERS, resume=True))
+                    message, workers=config.DOWNLOAD_WORKERS, resume=True))
             print(f"[Кэш] Загрузка продолжена: {doc_id}")
         else:
             self._cache_pinned.add(index)
@@ -4658,7 +5509,7 @@ class MainWindow(QMainWindow):
             self._stop_preload()
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
-                    message, workers=config.PARALLEL_WORKERS, resume=True))
+                    message, workers=config.DOWNLOAD_WORKERS, resume=True))
             print(f"[Кэш] Скачиваю в кэш: {doc_id}")
         self._cache_state.pop(doc_id, None)
         row = self._cache_rows.get(index)
@@ -4701,80 +5552,6 @@ class MainWindow(QMainWindow):
         for doc_id in ids:
             self.backend.discard_download(doc_id)
         print(f"[Кэш] Прелоад остановлен: {sorted(ids)}")
-
-    def _can_preload(self, index):
-        """Можно ли начинать прелоад строки.
-
-        Прелоад нужен только для быстрого старта по Enter. Если человек
-        уже что-то качает вручную, прелоад не начинается вовсе: он
-        занимал бы воркеров у выбранных загрузок, а ролик, который не
-        просили, всё равно качался бы «сам по себе».
-        """
-        if self._cache_pinned:
-            return False
-        if index in self._cache_pinned:
-            return False
-        try:
-            message = self.backend.current_messages[index]
-            doc_id = message.media.document.id
-        except Exception:
-            return True
-        # Остановленное крестиком не оживляем: человек сказал «стоп».
-        return doc_id not in self._cache_stopped
-
-    def on_video_selected(self, row):
-        # Прелоад начала выбранного ролика, чтобы он стартовал мгновенно.
-        # Пока плеер открыт — прелоад не трогаем (плеер управляет кешем сам).
-        if self.player_window is not None:
-            return
-        index = self._row_index(row)
-        if index is None:
-            return
-        try:
-            message = self.backend.current_messages[index]
-            doc = message.media.document
-        except Exception:
-            return
-        if doc.id == self._preload_doc_id:
-            return
-        if self._preload_doc_id is not None:
-            # Уходящую прелоад-загрузку выбрасываем с файлами: она была
-            # служебной и недокачанной, а место на диске занимает.
-            old = self._preload_doc_id
-            self._preload_ids.discard(old)
-            if not self._cache_pinned_id(old) and not self._is_playing(old):
-                self.backend.discard_download(old)
-        self._preload_doc_id = doc.id
-        if not self._can_preload(index):
-            return
-        # Прелоад тоже идёт по сообщению: иначе при истёкшей ссылке он
-        # молча застрянет, а ролик начнёт играть только с нуля.
-        self._preload_ids.add(doc.id)
-        self.backend.submit_coroutine(
-            self.backend.ensure_cache(message, workers=config.PRELOAD_WORKERS)
-        )
-
-    def _cache_pinned_id(self, doc_id):
-        """Этот ролик человек выбрал скачать вручную?"""
-        try:
-            messages = self.backend.current_messages
-        except Exception:
-            return False
-        for index in self._cache_pinned:
-            if 0 <= index < len(messages):
-                try:
-                    if messages[index].media.document.id == doc_id:
-                        return True
-                except Exception:
-                    continue
-        return False
-
-    def _is_playing(self, doc_id):
-        pw = self.player_window
-        if pw is None or getattr(pw, '_closed', True):
-            return False
-        return doc_id in (getattr(pw, '_current_doc_id', None),
-                          getattr(pw, '_next_doc_id', None))
 
     def _on_video_menu(self, pos):
         """ПКМ по ролику в списке канала: те же действия, что у значка.
@@ -4822,7 +5599,10 @@ class MainWindow(QMainWindow):
             self._cache_state.pop(doc_id, None)
             widget = self._cache_rows.get(index)
             if widget is not None:
-                widget.set_paused()
+                try:
+                    widget.set_paused()
+                except RuntimeError:
+                    pass
             QTimer.singleShot(300, self._refresh_downloads_view)
             return
         target = 'idle'
@@ -4845,11 +5625,19 @@ class MainWindow(QMainWindow):
             t = event.type()
             if t == QEvent.Type.MouseMove:
                 row = self.video_list.indexAt(event.position().toPoint()).row()
-                for i, r in getattr(self, '_cache_rows', {}).items():
-                    r.badge.set_hover(i == row)
+                for i, r in list(getattr(self, '_cache_rows', {}).items()):
+                    try:
+                        r.badge.set_hover(i == row)
+                    except RuntimeError:
+                        # Строку уже удалили вместе со списком, а событие
+                        # мыши пришло раньше, чем карта успела обновиться.
+                        continue
             elif t == QEvent.Type.Leave:
-                for r in getattr(self, '_cache_rows', {}).values():
-                    r.badge.set_hover(False)
+                for r in list(getattr(self, '_cache_rows', {}).values()):
+                    try:
+                        r.badge.set_hover(False)
+                    except RuntimeError:
+                        continue
         return super().eventFilter(obj, event)
 
     def open_player(self, item):
@@ -4863,44 +5651,10 @@ class MainWindow(QMainWindow):
         if row is None:
             return
 
-        # Плеер берёт управление кешем на себя.
-        self._preload_doc_id = None
-
-        # Если окно плеера уже открыто — просто переключаем ролик в нём.
-        # mpv уже инициализирован, поэтому старт происходит мгновенно,
-        # без повторной инициализации libmpv и создания окна.
-        pw = self.player_window
-        if pw is not None:
-            # Список мог смениться — закрепляем за окном актуальный.
-            pw.set_playlist(messages)
-            if pw.pip_window.isVisible():
-                # Главное окно плеера спрятано, видео живёт в PiP: show()
-                # дал бы пустое окно рядом с картинкой.
-                pw.play_video(row)
-            else:
-                pw.show()
-                pw.raise_()
-                pw.activateWindow()
-                QTimer.singleShot(0, lambda: self._start_playback(pw, row))
-            return
-
-        # Плеер — окно верхнего уровня, без родителя: иначе Qt сворачивает
-        # и закрывает дочерние окна вместе с главным, и вместе со списком
-        # каналов пропадал играющий ролик. Связь с главным окном держится
-        # сигналами, а закрывает плеер MainWindow.closeEvent.
-        self.player_window = PlayerWindow(self.backend, row, None)
-        self.player_window.sig_closed.connect(self._on_player_closed)
-        # Как только в плеере пошёл новый ролик — обновляем галочки в списке.
-        self.player_window.sig_watched.connect(self._render_video_list)
-        self.player_window.show()
-        self.player_window.activateWindow()
-        self.player_window.setFocus()
-
-        # Запускаем видео только после того, как окно реально показано:
-        # иначе mpv инициализирует вывод на скрытом окне и даёт чёрный
-        # экран до первого перезапуска файла.
-        pw = self.player_window
-        QTimer.singleShot(0, lambda: self._start_playback(pw, row))
+        # Плеер берёт управление кешем на себя. Дальше — общий путь с
+        # вкладкой истории: он сам решает, переиспользовать открытое окно
+        # или создать новое, и обновляет канал в заголовке.
+        self._play_messages(messages, row, self.backend.active_dialog_title)
 
     def _start_playback(self, pw, row, attempt=0):
         """Запускает ролик, только когда окно показано и получило размер.

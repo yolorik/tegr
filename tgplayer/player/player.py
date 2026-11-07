@@ -100,16 +100,25 @@ class PlayerWindow(QMainWindow):
     sig_aspect = pyqtSignal(float)
     sig_closed = pyqtSignal()
     sig_watched = pyqtSignal()
-    def __init__(self, backend, initial_video_index, parent=None):
+    # Запись истории обновилась — вкладке «История» пора пересобраться.
+    sig_history = pyqtSignal()
+
+    def __init__(self, backend, initial_video_index, parent=None,
+                 playlist=None, channel_title=None):
         super().__init__(parent)
         self.backend = backend
         self.current_video_index = initial_video_index
+        # Канал, из которого открыт ролик. Обычно совпадает с активным в
+        # главном окне, но история может открыть ролик из другого канала —
+        # тогда заголовок должен показывать именно его.
+        self._channel_title = channel_title or ''
         # Список роликов, закреплённый за этим окном, и его токен для HTTP.
         # Плеер работает только с ним: смена канала в главном окне не должна
         # подменять файл под уже играющим роликом.
         self.playlist = []
         self._playlist_token = None
-        self.set_playlist(self.backend.current_messages)
+        self.set_playlist(playlist if playlist is not None
+                          else self.backend.current_messages)
         # Иконка в заголовке окна: по ней плеер узнаётся на панели задач.
         icon = paths.load_app_icon()
         if icon is not None:
@@ -527,8 +536,8 @@ class PlayerWindow(QMainWindow):
             # определение потока как не-seekable.
             force_seekable='yes',
             demuxer_readahead_secs=config.MPV_DEMUX_READAHEAD_SECS,
-            demuxer_max_bytes='64MiB',
-            demuxer_max_back_bytes='16MiB',
+            demuxer_max_bytes=config.MPV_DEMUX_MAX_BYTES,
+            demuxer_max_back_bytes=config.MPV_DEMUX_MAX_BACK_BYTES,
             # Ошибки и предупреждения mpv должны быть видны: при 'all=no'
             # молчали и сбои декодера (чёрный экран при живом звуке).
             msg_level='all=warn',
@@ -625,7 +634,11 @@ class PlayerWindow(QMainWindow):
             # МАКСИМУМ из двух оценок — по текущему окну и по всему времени
             # загрузки. Одна заминка не должна выглядеть как мёртвый канал.
             now = time.monotonic()
-            net = e.get('speed_bytes', 0)
+            # speed_total — накопленные байты. speed_bytes — готовая
+            # скорость для вкладки загрузок; разницу от неё брать нельзя:
+            # это не счётчик, а байт/с. Именно из-за этого окно почти
+            # всегда давало ноль, и в строке оставалась половина средней.
+            net = e.get('speed_total', 0)
             self._speed_hist.append((now, net))
             while (len(self._speed_hist) >= 2
                    and now - self._speed_hist[0][0] > config.SPEED_WINDOW_SECS):
@@ -641,11 +654,14 @@ class PlayerWindow(QMainWindow):
             # Средняя за всю загрузку: показывает реальную пропускную
             # способность, не реагируя на секундные провалы.
             avg_bps = 0.0
-            st = e.get('started_ts')
+            # Среднюю считаем от первого полученного байта, а не от
+            # создания записи: прелоад мог создать её задолго до
+            # открытия плеера, и тогда средняя занижалась.
+            st = e.get('first_byte_ts') or e.get('started_ts')
             if st:
                 elapsed = now - st
                 if elapsed > 2.0:
-                    avg_bps = e.get('downloaded_bytes', 0) / elapsed
+                    avg_bps = e.get('speed_total', 0) / elapsed
 
             # Скорость для интерфейса и для проверки битрейта — не ниже
             # половины средней: если канал тянет, короткая пауза не должна
@@ -714,6 +730,14 @@ class PlayerWindow(QMainWindow):
         # Список канала сменился — панель нужно пересобрать.
         if getattr(self, '_playlist_shown', False):
             self._refresh_playlist()
+
+    def set_channel_title(self, title):
+        """Меняет канал в заголовке окна — при смене канала или из истории."""
+        self._channel_title = title or ''
+        try:
+            self.setWindowTitle(self._window_title(self.current_video_index))
+        except Exception:
+            pass
 
     def _build_playlist_panel(self):
         """Панель со списком роликов канала.
@@ -1071,19 +1095,50 @@ class PlayerWindow(QMainWindow):
             self.setWindowTitle(self._window_title(index))
 
             # Битрейт ролика: по нему видно, потянет ли его канал.
+            duration = 0.0
             try:
                 attr = next(
                     (a for a in document.attributes
                      if isinstance(a, _telethon.DocumentAttributeVideo)),
                     None
                 )
-                dur = getattr(attr, 'duration', 0) if attr else 0
+                duration = float(getattr(attr, 'duration', 0) or 0)
                 self._cur_bitrate_mbps = (
-                    document.size * 8 / dur / 1_000_000 if dur else 0.0
+                    document.size * 8 / duration / 1_000_000
+                    if duration else 0.0
                 )
             except Exception:
                 self._cur_bitrate_mbps = 0.0
             self._warned_slow = False
+
+            # История просмотров: название, канал и дата. Пишем при
+            # каждом запуске — повторный просмотр поднимает запись наверх.
+            # Ошибка истории не должна мешать воспроизведению.
+            try:
+                message = self.playlist[index]
+                ch = (self._channel_title
+                      or getattr(self.backend, 'active_dialog_title', '')
+                      or '')
+                if not ch:
+                    # Название могли ещё не выставить в главном окне —
+                    # спрашиваем у бэкенда по id канала (без сети).
+                    try:
+                        ch = self.backend._peer_title(
+                            getattr(message, 'chat_id', None)) or ''
+                    except Exception:
+                        ch = ''
+                self.backend.record_history(
+                    document.id,
+                    title=self._video_title(index),
+                    channel=ch,
+                    peer_id=getattr(message, 'chat_id', None),
+                    message_id=getattr(message, 'id', None),
+                    duration=duration,
+                    size=document.size,
+                )
+                self.sig_history.emit()
+            except Exception as ex:
+                print(f"[История] Запись не удалась: {ex}")
 
             self.backend.submit_coroutine(
                 self.backend.ensure_cache(
@@ -1654,7 +1709,8 @@ class PlayerWindow(QMainWindow):
         внутри.
         """
         title = self._video_title(index)
-        channel = getattr(self.backend, 'active_dialog_title', '') or ''
+        channel = (self._channel_title
+                   or getattr(self.backend, 'active_dialog_title', '') or '')
         base = f"{title} — {channel}" if channel else title
         return f"{base}  [{version.version_text()}]"
 

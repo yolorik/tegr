@@ -251,6 +251,21 @@ def ui_scale():
     return _ui_scale
 
 
+def scale_px(value):
+    """Пиксельный размер с учётом масштаба интерфейса.
+
+    Нужен там, где размеры заданы не в таблице стилей, а кодом: строки
+    списков, значки и свои paintEvent. Таблица стилей масштабируется
+    отдельно (scale_css), и без этой функции такие элементы оставались
+    бы одного размера при любом масштабе.
+    """
+    try:
+        factor = _ui_scale / 100.0
+    except Exception:
+        factor = 1.0
+    return max(1, int(float(value) * factor + 0.5))
+
+
 _PX_RE = re.compile(r'(\d+)px')
 
 

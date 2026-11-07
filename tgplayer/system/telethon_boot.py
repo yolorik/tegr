@@ -35,6 +35,12 @@ PasswordHashInvalidError = None
 # Ошибка «ссылка на файл истекла». До загрузки Telethon её нет, поэтому
 # backend проверяет ещё и по тексту ошибки.
 FileReferenceExpiredError = None
+# Слишком много запросов: надо ждать, а не переподключаться. До загрузки
+# Telethon класса нет, backend проверяет ещё и по тексту.
+FloodWaitError = None
+# Сервер не принял диапазон (например, запрос пересёк границу 1 МБ).
+# Тогда переходим на 512 КБ вместо 1 МБ.
+LimitInvalidError = None
 
 
 def loaded():
@@ -51,6 +57,7 @@ def load():
     global SessionPasswordNeededError, PhoneCodeInvalidError
     global PhoneCodeExpiredError, PhoneNumberInvalidError
     global PasswordHashInvalidError, FileReferenceExpiredError
+    global FloodWaitError, LimitInvalidError
     global _loaded
 
     if _loaded:
@@ -74,7 +81,15 @@ def load():
             SessionPasswordNeededError as _SPN, PhoneCodeInvalidError as _PCI,
             PhoneCodeExpiredError as _PCE, PhoneNumberInvalidError as _PNI,
             PasswordHashInvalidError as _PHI,
-            FileReferenceExpiredError as _FRE)
+            FileReferenceExpiredError as _FRE,
+            FloodWaitError as _FWE)
+        # LimitInvalidError появился позже остальных; без него плеер
+        # должен продолжать работать, а не падать на импорте.
+        try:
+            from telethon.errors import LimitInvalidError as _LIE
+        except ImportError:
+            _LIE = None
+        from telethon.client import downloads as _downloads
 
         TelegramClient = _TC
         telethon_connections = _conn
@@ -95,6 +110,24 @@ def load():
         PhoneNumberInvalidError = _PNI
         PasswordHashInvalidError = _PHI
         FileReferenceExpiredError = _FRE
+        FloodWaitError = _FWE
+        LimitInvalidError = _LIE
+
+        # Telethon считает 512 КБ максимумом одного upload.getFile и молча
+        # режет до него даже явно переданный размер. Замер 06.11.2026:
+        # 1 МБ даёт 5.9–6.2 МБ/с против 2.8–3.0 у 512 КБ, поэтому предел
+        # поднимаем. Запросы всё равно должны быть выровнены на 1 МБ —
+        # сервер отвергает диапазон, пересекающий эту границу.
+        #
+        # Значение по умолчанию у iter_download (request_size) остаётся
+        # прежним: оно вычислено при определении функции. Backend передаёт
+        # размер явно.
+        try:
+            if hasattr(_downloads, 'MAX_CHUNK_SIZE'):
+                _downloads.MAX_CHUNK_SIZE = 1024 * 1024
+        except Exception as ex:
+            print(f"[Старт] Не удалось поднять размер запроса Telethon: {ex}")
+
         # Признак «загружено» держим отдельно: сами имена может
         # подменить вызывающий код (например, тесты подставляют свою
         # заглушку вместо TelegramClient), и по ним повторную загрузку

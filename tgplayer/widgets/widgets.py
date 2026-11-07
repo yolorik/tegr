@@ -207,7 +207,13 @@ def _piece_ranges(size):
     нужные байты приходили бы последними.
     """
     pieces = []
-    tail_start = max(config.BOOTSTRAP_BYTES, size - config.TAIL_BYTES)
+    # Начало хвоста выравниваем по размеру запроса: Telegram отвергает
+    # диапазон, пересекающий границу 1 МБ, а размер файла на мегабайт
+    # обычно не делится. Без выравнивания хвост не скачался бы вовсе.
+    tail_start = max(
+        config.BOOTSTRAP_BYTES,
+        (size - config.TAIL_BYTES) // config.CHUNK_SIZE * config.CHUNK_SIZE,
+    )
     start = 0
     while start < size:
         if start < config.BOOTSTRAP_BYTES:
