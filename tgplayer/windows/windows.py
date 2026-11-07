@@ -2733,7 +2733,16 @@ class MainWindow(QMainWindow):
 
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName('maintabs')
-        self.main_tabs.addTab(splitter, 'Каналы')
+        # Отступ между полосой вкладок и содержимым. Без него поиск
+        # видео прилипал к вкладке «Загрузки» и казался частью той же
+        # строки — две разные области сливались.
+        channels_tab = QWidget()
+        channels_lay = QVBoxLayout(channels_tab)
+        channels_lay.setContentsMargins(0, theme.scale_px(10), 0, 0)
+        channels_lay.setSpacing(0)
+        channels_lay.addWidget(splitter)
+        self._channels_tab_layout = channels_lay
+        self.main_tabs.addTab(channels_tab, 'Каналы')
         self.main_tabs.addTab(self.history_tab, 'История')
         # Вкладка загрузок есть всегда: раньше она появлялась и
         # исчезала по наличию записей в кэше, и в момент, когда
@@ -3319,6 +3328,12 @@ class MainWindow(QMainWindow):
                 pass
         # При первом вызове из __init__ список роликов ещё не создан:
         # стиль уже применён, а пересобирать пока нечего.
+        if getattr(self, '_channels_tab_layout', None) is not None:
+            try:
+                self._channels_tab_layout.setContentsMargins(
+                    0, theme.scale_px(10), 0, 0)
+            except Exception:
+                pass
         if getattr(self, 'video_list', None) is not None:
             try:
                 if getattr(self, 'current_dialogs', None):
