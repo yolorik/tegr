@@ -181,22 +181,22 @@ class CacheWorkerTests(unittest.IsolatedAsyncioTestCase):
         queue = e['queue']
         queue.put_nowait((0, 0))
 
-        import tgplayer.backend.backend as backend_module
-        old_error = backend_module.telethon_boot.FloodWaitError
-        real_sleep = backend_module.asyncio.sleep
+        import tgplayer.backend.download as cache_module
+        old_error = cache_module.telethon_boot.FloodWaitError
+        real_sleep = cache_module.asyncio.sleep
 
         async def fast_sleep(_delay):
             await real_sleep(0)
 
-        backend_module.telethon_boot.FloodWaitError = _Flood
-        backend_module.asyncio.sleep = fast_sleep
+        cache_module.telethon_boot.FloodWaitError = _Flood
+        cache_module.asyncio.sleep = fast_sleep
         try:
             task = asyncio.create_task(
                 backend._cache_worker(_Document(), e, queue, 0, 0.0))
             await asyncio.wait_for(task, 5)
         finally:
-            backend_module.telethon_boot.FloodWaitError = old_error
-            backend_module.asyncio.sleep = real_sleep
+            cache_module.telethon_boot.FloodWaitError = old_error
+            cache_module.asyncio.sleep = real_sleep
 
         # FloodWait — не обрыв маршрута: переподключаться не надо, а кусок
         # после ожидания возвращается в очередь и качается заново.
