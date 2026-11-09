@@ -1,4 +1,4 @@
-param([string]$SrcDir = '')
+﻿param([string]$SrcDir = '')
 $ErrorActionPreference = 'Stop'
 
 # Build the Inno Setup installer from dist\<AppName>.
@@ -6,7 +6,38 @@ $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
 $iscc = 'C:\Users\yolorik\AppData\Local\Programs\Inno Setup 6\ISCC.exe'
+if ($env:ISCC) { $iscc = $env:ISCC }
+if (-not (Test-Path $iscc)) {
+    foreach ($candidate in @(
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+    )) {
+        if (Test-Path $candidate) { $iscc = $candidate; break }
+    }
+}
+if (-not (Test-Path $iscc)) {
+    $found = Get-Command ISCC -ErrorAction SilentlyContinue
+    if ($found) { $iscc = $found.Source }
+}
+if (-not (Test-Path $iscc)) {
+    Write-Output 'Inno Setup 6 (ISCC.exe) not found. Set ISCC or install it.'
+    exit 1
+}
 $py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
+if ($env:PYTHON) { $py = $env:PYTHON }
+if (-not (Test-Path $py)) {
+    $found = Get-Command python -ErrorAction SilentlyContinue
+    if ($found) { $py = $found.Source }
+}
+if (-not (Test-Path $py)) {
+    $found = Get-Command py -ErrorAction SilentlyContinue
+    if ($found) { $py = $found.Source }
+}
+if (-not (Test-Path $py)) {
+    Write-Output 'Python 3.11 not found. Set PYTHON or install it.'
+    exit 1
+}
 
 $meta = & $py -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.APP_NAME); print(v.VERSION)"
 if (-not $meta -or $meta.Count -lt 2) {

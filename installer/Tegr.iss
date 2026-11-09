@@ -28,16 +28,16 @@
   #define AppName "Tegr"
 #endif
 #ifndef AppVersion
-  #define AppVersion "4.0.0"
+  #define AppVersion "4.0.1"
 #endif
 #ifndef AppExe
   #define AppExe "Tegr.exe"
 #endif
 #ifndef SourceRoot
-  #define SourceRoot "H:\deepseek projects\tegr new"
+  #define SourceRoot "."
 #endif
 #ifndef SrcDir
-  #define SrcDir "H:\deepseek projects\tegr new\dist\Tegr"
+  #define SrcDir "dist\Tegr"
 #endif
 
 [Setup]
@@ -76,7 +76,7 @@ DisableDirPage=no
 UsePreviousLanguage=no
 ; OutputDir задаёт _build_inst.ps1: установщик кладётся в releases\<версия>.
 OutputBaseFilename={#AppName}_Setup
-SetupIconFile="H:\deepseek projects\tegr new\tgplayer.ico"
+SetupIconFile="{#SourceRoot}\tgplayer.ico"
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
 Compression=lzma2/max

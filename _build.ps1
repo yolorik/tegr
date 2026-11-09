@@ -1,10 +1,23 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 # Build Tegr.exe from this directory.
 # Name and version come from tgplayer/core/version.py.
 
 $root = $PSScriptRoot
 $py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
+if ($env:PYTHON) { $py = $env:PYTHON }
+if (-not (Test-Path $py)) {
+    $found = Get-Command python -ErrorAction SilentlyContinue
+    if ($found) { $py = $found.Source }
+}
+if (-not (Test-Path $py)) {
+    $found = Get-Command py -ErrorAction SilentlyContinue
+    if ($found) { $py = $found.Source }
+}
+if (-not (Test-Path $py)) {
+    Write-Output 'Python 3.11 not found. Set PYTHON or install it.'
+    exit 1
+}
 
 $meta = & $py -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.APP_NAME); print(v.VERSION)"
 if (-not $meta -or $meta.Count -lt 2) {
