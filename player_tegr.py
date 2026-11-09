@@ -1,7 +1,7 @@
 """Tegr — рабочий вариант с оформлением Paper × Studio.
 
-Отдельная точка входа. Использует тот же TelegramBackend и PlayerWindow,
-что и player_deepseek.py, но главное окно собрано по-новому: каналы
+Точка входа. Использует тот же TelegramBackend и PlayerWindow, что и
+остальные окна, но главное окно собрано по-новому: каналы
 слева, видео в центре, загрузки и история справа, темы и масштаб — в
 настройках.
 
@@ -13,7 +13,7 @@ import asyncio
 import sys
 
 # Локальный фасад готовит окружение: каталог данных, журнал, libmpv и
-# пути. Это копия старого фасада, чтобы каталог работал отдельно.
+# пути.
 import tgplayer_runtime as base
 
 from PyQt6.QtWidgets import QApplication, QMessageBox

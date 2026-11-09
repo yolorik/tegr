@@ -5,10 +5,9 @@
 остаётся фасадом:
 
   * готовит окружение (каталог данных, журнал, libmpv, Qt);
-  * реэкспортирует имена из пакета под прежними именами, поэтому
-    `player_deepseek.PlayerWindow`, `player_deepseek.TelegramBackend` и
-    остальное продолжают работать — на этом держатся тесты и сборка;
-  * содержит точку входа `python player_deepseek.py`.
+  * реэкспортирует имена из пакета под прежними именами — на этом
+    держатся тесты и внешние точки входа;
+  * используется `player_tegr.py` при запуске.
 
 Архитектура (подробнее — в `tgplayer/__init__.py`):
 
@@ -227,10 +226,10 @@ from aiohttp import web
 # ------------------------------------------------------------------
 # Всё, что уже переехало в пакет, берём оттуда.
 # ------------------------------------------------------------------
-# Фасад нужен не для красоты: на этих именах держатся тесты и сборка
-# (`player_deepseek.PlayerWindow`, `player_deepseek.TelegramBackend`,
-# `player_deepseek.build_style` и прочее). Поэтому имена не просто
-# импортируются, а остаются доступными отсюда как раньше.
+# Фасад нужен не для красоты: на этих именах держатся тесты и внешние
+# точки входа (`PlayerWindow`, `TelegramBackend`, `build_style` и
+# прочее). Поэтому имена не просто импортируются, а остаются
+# доступными отсюда как раньше.
 from tgplayer.core import config as _config
 from tgplayer.core import history as _history
 from tgplayer.core import paths as _paths_mod
@@ -320,7 +319,7 @@ backend_settings = _settings_mod.of_backend
 
 _fmt_speed = _utils.fmt_speed
 # Версия: единый источник — tgplayer/core/version.py. Здесь только имя,
-# чтобы её было видно как player_deepseek.VERSION.
+# чтобы её было видно и под прежним именем VERSION.
 version = _version
 VERSION = _version.VERSION
 # Название программы: идёт в заголовок окна и в подписи.

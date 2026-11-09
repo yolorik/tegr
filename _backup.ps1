@@ -1,4 +1,4 @@
-﻿# Бэкап исходников TGPlayer перед внесением изменений.
+﻿# Бэкап исходников Tegr перед внесением изменений.
 #   .\ _backup.ps1            -> создать бэкап
 #   .\ _backup.ps1 -List      -> показать бэкапы
 #   .\ _backup.ps1 -Restore <папка>  -> восстановить из бэкапа
@@ -21,7 +21,7 @@ function Make-Backup {
     }
 
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    robocopy $root $dest /E /XD .git dist dist_250 dist_v2 build build_250 build_v2 __pycache__ _backups _build installer _inst_probe _extracted_1810 _verify_inst _build_data _build_data_250 _pv _release_2.6.0 stream_cache `
+    robocopy $root $dest /E /XD .git dist build __pycache__ _backups _build _build_data stream_cache `
         /XF *.pyc *.dll *.exe *.ico *.log *.bin version_info_gen.txt /NFL /NDL /NJH /NJS /NP | Out-Null
 
     $head = git -C $root rev-parse --short HEAD

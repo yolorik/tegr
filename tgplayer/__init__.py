@@ -27,8 +27,7 @@
     windows/     главное окно, диалоги
     player_tegr.py  точка входа
 
-Точка входа — ``player_tegr.py``. Старый ``player_deepseek.py`` оставлен
-для совместимости со старыми тестами и сборками.
+Точка входа — ``player_tegr.py``.
 """
 
 from .core.version import VERSION as __version__

@@ -69,8 +69,8 @@ def install_tegr_themes():
     """Подменяет список тем на четыре темы нового оформления.
 
     Вызывается до создания MainWindow: старый SettingsDialog читает
-    theme.THEME_TITLES и сразу покажет новые темы. В этом процессе
-    старый player_deepseek.py не затрагивается — там свои темы.
+    theme.THEME_TITLES и сразу покажет новые темы. Базовое оформление
+    не затрагивается — у него свои темы.
     """
     palettes = {}
     for key, spec in _THEME_SPECS.items():
