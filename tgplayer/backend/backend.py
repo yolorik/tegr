@@ -1118,9 +1118,12 @@ class TelegramBackend(QObject):
             if e.get('complete') or e.get('removed'):
                 continue
             # wanted заполняет обработчик потока, когда mpv упёрся в
-            # непрокачанный участок и просит именно его.
-            if e.get('wanted'):
-                return True
+            # непрокачанный участок и просит именно его. Записи старше
+            # TTL уже не считаются: иначе давно закрытый ролик навсегда
+            # оставлял «читателя», и наблюдатель зря переподключался.
+            for idx in list((e.get('wanted') or {})):
+                if self._piece_wanted(e, idx):
+                    return True
         return False
 
     async def _revive_workers(self):
@@ -1133,7 +1136,8 @@ class TelegramBackend(QObject):
         записей есть живые воркеры, и поднимаем их заново.
         """
         for doc_id, e in list(self.cache.items()):
-            if e.get('complete') or e.get('removed') or e.get('paused'):
+            if (e.get('complete') or e.get('removed') or e.get('paused')
+                    or e.get('error')):
                 continue
             if e.get('fh') is None or e.get('queue') is None:
                 continue
@@ -2828,6 +2832,10 @@ class TelegramBackend(QObject):
             # при открытии плеера загрузка шла на полной скорости.
             if e.get('complete') or e.get('queue') is None:
                 return e
+            if e.get('error'):
+                # Фатальная ошибка (например, умершая ссылка) не лечится
+                # новыми воркерами: они сразу выйдут.
+                return e
 
             # Писательский дескриптор мог остаться закрытым (например,
             # после сбоя завершения файла). Воркер первым делом проверяет
@@ -3169,6 +3177,10 @@ class TelegramBackend(QObject):
         # большом файле с индексом в конце.
         now = time.monotonic()
         wanted = e.setdefault('wanted', {})
+        # Чистим старые отметки, чтобы словарь не рос весь сеанс.
+        for old_idx, ts in list(wanted.items()):
+            if now - ts >= config.WANTED_TTL:
+                wanted.pop(old_idx, None)
         for idx in order:
             if 0 <= idx < e['piece_count']:
                 wanted[idx] = now
