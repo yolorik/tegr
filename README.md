@@ -49,6 +49,30 @@ python -m unittest discover -s tests -v
 
 Python, PyQt6, libmpv, Telethon, aiohttp.
 
+## Структура проекта
+
+- `player_tegr.py` — точка входа.
+- `tgplayer_runtime.py` — общая среда запуска и совместимость.
+- `tgplayer/backend/` — Telegram, кэш и локальный HTTP-сервер:
+  - `backend.py` — сборка бэкенда и сигналы Qt;
+  - `connection.py` — клиент, прокси и переподключение;
+  - `login.py` — вход в аккаунт;
+  - `catalog.py` — каналы, папки и поиск;
+  - `videos.py` — списки видео и качества;
+  - `cache.py` — записи кэша и наблюдатель;
+  - `download.py` — очередь и загрузка кусков;
+  - `stream.py` — HTTP-сервер для mpv;
+  - `playback.py` — история и позиции;
+  - `cache_math.py`, `http_range.py` — чистые расчёты.
+- `tgplayer/core/` — настройки, история, темы, конфигурация, обновления.
+- `tgplayer/player/` — окно плеера и управление mpv.
+- `tgplayer/widgets/` — общие виджеты.
+- `tgplayer/windows/` — главное окно, настройки и строки списков.
+- `tgplayer/system/` — запуск Telethon и mpv.
+- `tests/` — тесты.
+- `installer/` — Inno Setup.
+- `_build.ps1`, `_build_inst.ps1` — сборка программы и установщика.
+
 ## Сборка
 
 Нужны Python 3.11, зависимости из `requirements-dev.txt`, PyInstaller и Inno Setup 6:
