@@ -6,15 +6,21 @@ Tegr не ждёт полной загрузки ролика: видео идё
 
 ## Скриншоты
 
-![Широкое окно: каналы, видео и загрузки](docs/screenshots/main-wide.png)
+Нажмите на миниатюру, чтобы открыть полный скриншот.
 
-![Среднее окно: каналы и видео](docs/screenshots/main-medium.png)
+<p align="center">
+  <a href="docs/screenshots/main-wide.png"><img src="docs/screenshots/thumbs/main-wide.png" alt="Широкое окно: каналы, видео и загрузки" width="720"></a>
+</p>
 
-![История просмотров](docs/screenshots/main-history.png)
+<p align="center">
+  <a href="docs/screenshots/main-medium.png"><img src="docs/screenshots/thumbs/main-medium.png" alt="Среднее окно: каналы и видео" width="350"></a>
+  <a href="docs/screenshots/main-history.png"><img src="docs/screenshots/thumbs/main-history.png" alt="История просмотров" width="350"></a>
+</p>
 
-![Узкое окно: список каналов](docs/screenshots/main-narrow.png)
-
-![Узкое окно: видео канала](docs/screenshots/main-narrow-videos.png)
+<p align="center">
+  <a href="docs/screenshots/main-narrow.png"><img src="docs/screenshots/thumbs/main-narrow.png" alt="Узкое окно: список каналов" width="230"></a>
+  <a href="docs/screenshots/main-narrow-videos.png"><img src="docs/screenshots/thumbs/main-narrow-videos.png" alt="Узкое окно: видео канала" width="230"></a>
+</p>
 
 ## Интерфейс
 
