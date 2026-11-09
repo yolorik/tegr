@@ -3289,17 +3289,20 @@ class TelegramBackend(QObject):
         спрашивай — это и был затык «серии перестали грузиться».
 
         Возвращает True, если документ обновился и кусок можно пытать
-        снова.
+        снова; False — сообщение удалено или медиа заменено; None —
+        сеть не дала обновить ссылку, стоит повторить позже.
         """
         message = e.get('message')
         if message is None:
             return False
         try:
-            fresh = await self.client.get_messages(
-                message.peer_id, ids=message.id)
+            fresh = await self._request_with_reconnect(
+                lambda: self.client.get_messages(
+                    message.peer_id, ids=message.id),
+                'Обновление ссылки на файл')
         except Exception as ex:
             print(f"[Кэш] Ссылку обновить не удалось ({doc_id}): {ex}")
-            return False
+            return None
         media = getattr(fresh, 'media', None)
         document = getattr(media, 'document', None)
         if document is None or document.id != doc_id:
@@ -3598,11 +3601,23 @@ class TelegramBackend(QObject):
                         if not expired and telethon_boot.FileReferenceExpiredError is not None:
                             expired = isinstance(ex, telethon_boot.FileReferenceExpiredError)
                         if expired:
-                            if await self._refresh_document(e, document.id):
+                            refreshed = await self._refresh_document(
+                                e, document.id)
+                            if refreshed:
                                 print(f"[Кэш] Кусок {idx}: ссылка обновлена, "
                                       "продолжаю")
                                 continue
-                            # Обновить не удалось — ссылка мертва навсегда.
+                            if refreshed is None:
+                                # Сеть не дала прочитать сообщение. Это не
+                                # повод навсегда помечать файл мёртвым:
+                                # вернём кусок в очередь и попробуем позже.
+                                print(f"[Кэш] Кусок {idx}: ссылку не "
+                                      "обновить из-за сети — повторю")
+                                await asyncio.sleep(1.0)
+                                aborted = True
+                                break
+                            # Сообщение удалили или медиа заменили — вот
+                            # теперь ссылка мертва навсегда.
                             # Помечаем запись сбойной и выходим из воркера
                             # совсем: иначе внешний while взял бы кусок из
                             # очереди снова, и это превращалось в вечный
