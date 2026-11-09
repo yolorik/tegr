@@ -1,7 +1,9 @@
+import os
+import tempfile
 import unittest
 
 from tgplayer.backend.cache_math import (
-    DownloadTracker, _piece_ranges, piece_index_for)
+    DownloadTracker, _piece_ranges, index_at_end, piece_index_for)
 
 
 class DownloadTrackerTests(unittest.TestCase):
@@ -86,6 +88,36 @@ class PieceRangesTests(unittest.TestCase):
                 self.assertGreater(length, 0, (size, pieces))
                 pos += length
             self.assertEqual(pos, size, (size, pieces))
+
+
+class IndexAtEndTests(unittest.TestCase):
+    @staticmethod
+    def box(kind, payload=b''):
+        body = kind + payload
+        return len(body).to_bytes(4, 'big') + body
+
+    def write(self, data):
+        fd, path = tempfile.mkstemp()
+        os.write(fd, data)
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_moov_before_mdat_needs_no_tail(self):
+        data = self.box(b'moov') + self.box(b'mdat', b'x' * 16)
+        self.assertFalse(index_at_end(self.write(data), len(data)))
+
+    def test_mdat_before_moov_needs_tail(self):
+        data = self.box(b'mdat', b'x' * 16) + self.box(b'moov')
+        self.assertTrue(index_at_end(self.write(data), len(data)))
+
+    def test_ebml_needs_tail(self):
+        data = b'\x1a\x45\xdf\xa3' + b'\x00' * 8
+        self.assertTrue(index_at_end(self.write(data), len(data)))
+
+    def test_short_or_missing_file_is_safe(self):
+        self.assertFalse(index_at_end(self.write(b'abc'), 3))
+        self.assertFalse(index_at_end('no-such-file', 100))
 
 
 if __name__ == '__main__':

@@ -33,7 +33,8 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from ..core import config, history, log, paths, proxy, settings, utils
 from ..system import telethon_boot
 from .cache_math import (
-    DownloadTracker, _open_read, _piece_ranges, piece_index_for)
+    DownloadTracker, _open_read, _piece_ranges, index_at_end,
+    piece_index_for)
 from .http_range import parse_range_header
 
 CHANNEL_MARKS_FILE = 'channel_videos.json'
@@ -3075,43 +3076,8 @@ class TelegramBackend(QObject):
 
     @staticmethod
     def _index_at_end(path, size):
-        """True, если индекс файла лежит в конце и нужен для старта.
-
-        MP4: если mdat идёт раньше moov — индекс в хвосте; если moov
-        впереди (faststart), хвост не нужен.
-        MKV/WebM: боксов нет, а Cues почти всегда в конце — значит хвост
-        нужен всегда.
-        """
-        try:
-            with open(path, 'rb') as f:
-                head = f.read(8)
-                if len(head) < 8:
-                    return False
-
-                # MKV/WebM — сигнатура EBML.
-                if head[:4] == b'\x1a\x45\xdf\xa3':
-                    return True
-
-                pos = 0
-                for _ in range(12):
-                    if pos + 8 > size:
-                        return False
-                    f.seek(pos)
-                    hdr = f.read(8)
-                    if len(hdr) < 8:
-                        return False
-                    box_size = int.from_bytes(hdr[0:4], 'big')
-                    box_type = hdr[4:8]
-                    if box_type == b'moov':
-                        return False        # moov в начале — всё хорошо
-                    if box_type == b'mdat':
-                        return True         # mdat раньше moov -> индекс в хвосте
-                    if box_size < 8:
-                        return False
-                    pos += box_size
-        except Exception:
-            return False
-        return False
+        """Оставлено для совместимости: логика в cache_math."""
+        return index_at_end(path, size)
 
     def _maybe_prioritize_tail(self, e):
         """Один раз проверяет расположение индекса и поднимает хвост."""
