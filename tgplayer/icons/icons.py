@@ -48,17 +48,19 @@ def get_icon(kind):
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
     if kind == 'prev':
-        p.drawRect(5, 6, 3, 12)
-        p.drawPolygon(QPolygon([QPoint(19, 6), QPoint(19, 18), QPoint(9, 12)]))
+        # Стрелки сделаны крупнее и толще: на маленьком значке тонкие
+        # треугольники читались плохо.
+        p.drawRect(4, 5, 4, 14)
+        p.drawPolygon(QPolygon([QPoint(20, 5), QPoint(20, 19), QPoint(8, 12)]))
     elif kind == 'next':
-        p.drawRect(16, 6, 3, 12)
-        p.drawPolygon(QPolygon([QPoint(5, 6), QPoint(5, 18), QPoint(15, 12)]))
+        p.drawRect(16, 5, 4, 14)
+        p.drawPolygon(QPolygon([QPoint(4, 5), QPoint(4, 19), QPoint(16, 12)]))
     elif kind == 'rew':
-        p.drawPolygon(QPolygon([QPoint(12, 6), QPoint(12, 18), QPoint(4, 12)]))
-        p.drawPolygon(QPolygon([QPoint(20, 6), QPoint(20, 18), QPoint(12, 12)]))
+        p.drawPolygon(QPolygon([QPoint(13, 5), QPoint(13, 19), QPoint(3, 12)]))
+        p.drawPolygon(QPolygon([QPoint(22, 5), QPoint(22, 19), QPoint(12, 12)]))
     elif kind == 'ff':
-        p.drawPolygon(QPolygon([QPoint(4, 6), QPoint(4, 18), QPoint(12, 12)]))
-        p.drawPolygon(QPolygon([QPoint(12, 6), QPoint(12, 18), QPoint(20, 12)]))
+        p.drawPolygon(QPolygon([QPoint(2, 5), QPoint(2, 19), QPoint(12, 12)]))
+        p.drawPolygon(QPolygon([QPoint(11, 5), QPoint(11, 19), QPoint(21, 12)]))
     elif kind == 'play':
         p.drawPolygon(QPolygon([QPoint(8, 5), QPoint(8, 19), QPoint(19, 12)]))
     elif kind == 'pause':

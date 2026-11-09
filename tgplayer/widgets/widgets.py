@@ -34,6 +34,56 @@ class ClickableSlider(QSlider):
         ratio = max(0.0, min(1.0, x / max(1, self.width())))
         return int(self.minimum() + span * ratio)
 
+    def paintEvent(self, event):
+        """Ползунок громкости рисуем сами: круглый в любой теме.
+
+        Таблица стилей задавала border-radius, но системный стиль на
+        части машин всё равно рисовал квадратный ползунок. Своя
+        отрисовка от стиля не зависит.
+        """
+        if self.orientation() != Qt.Orientation.Horizontal:
+            super().paintEvent(event)
+            return
+        try:
+            pal = theme.theme()
+            light = bool(theme.is_light())
+        except Exception:
+            pal = {}
+            light = False
+        # Дорожка и ползунок — как у панели управления: на тёмной
+        # панели белая дорожка с прозрачностью, на светлой — чёрная.
+        base = QColor('#000000' if light else '#ffffff')
+        track = QColor(base)
+        track.setAlpha(56)
+        filled = QColor(pal.get('accent') or '#5288c1')
+        handle = (QColor(pal.get('text') or '#000000') if light
+                  else QColor('#ffffff'))
+        if self.underMouse():
+            handle = QColor(pal.get('accent_hi') or '#5f9bd4')
+        d = max(8, theme.scale_px(12))
+        track_h = max(2, theme.scale_px(4))
+        left = d / 2
+        width = max(1.0, self.width() - d)
+        span = self.maximum() - self.minimum()
+        ratio = ((self.value() - self.minimum()) / span) if span else 0.0
+        ratio = max(0.0, min(1.0, ratio))
+        y = (self.height() - track_h) / 2
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(
+            QRectF(left, y, width, track_h), track_h / 2, track_h / 2)
+        w = max(track_h, width * ratio)
+        p.setBrush(filled)
+        p.drawRoundedRect(
+            QRectF(left, y, w, track_h), track_h / 2, track_h / 2)
+        cx = left + width * ratio
+        p.setBrush(handle)
+        p.drawEllipse(
+            QRectF(cx - d / 2, (self.height() - d) / 2, d, d))
+        p.end()
+
     def mousePressEvent(self, event):
         """Перематывает сразу в точку клика, а не на шаг ползунка."""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -110,12 +160,23 @@ class SeekSlider(ClickableSlider):
         y = (self.height() - self.TRACK_H) / 2
         r = self.TRACK_H / 2
 
+        # Цвет дорожки берём у темы: на светлой панели белая
+        # дорожка исчезала, а на тёмной — наоборот.
+        try:
+            ink = QColor(theme.theme()['text'])
+        except Exception:
+            ink = QColor('#ffffff')
+        track = QColor(ink)
+        track.setAlpha(70)
+        buffered = QColor(ink)
+        buffered.setAlpha(125)
+
         # Фон — весь ролик.
-        p.setBrush(QColor(255, 255, 255, 70))
+        p.setBrush(track)
         p.drawRoundedRect(QRectF(left, y, width, self.TRACK_H), r, r)
 
         # Скачанные участки.
-        p.setBrush(QColor(255, 255, 255, 125))
+        p.setBrush(buffered)
         for a, b in self._buffered:
             x = left + width * a
             w = max(self.TRACK_H, width * (b - a))
@@ -130,7 +191,7 @@ class SeekSlider(ClickableSlider):
 
         # Ползунок.
         hx = left + width * ratio
-        p.setBrush(QColor(255, 255, 255))
+        p.setBrush(ink)
         p.drawEllipse(
             QRectF(hx - hd / 2, (self.height() - hd) / 2, hd, hd)
         )
@@ -312,10 +373,21 @@ class AutoplaySwitch(QWidget):
         except Exception:
             accent = QColor('#5288c1')
 
-        # Дорожка: включено — акцентная, выключено — приглушённая белая.
-        track = QColor(accent) if self._on else QColor(255, 255, 255, 46)
+        # Дорожка: включено — акцентная, выключено — приглушённый
+        # цвет текста темы. Белая на светлой панели была не видна.
+        try:
+            ink = QColor(theme.theme()['text'])
+        except Exception:
+            ink = QColor('#ffffff')
+        off = QColor(ink)
+        off.setAlpha(70)
+        track = QColor(accent) if self._on else off
         if self._hover:
-            track = track.lighter(118) if self._on else QColor(255, 255, 255, 70)
+            if self._on:
+                track = track.lighter(118)
+            else:
+                track = QColor(ink)
+                track.setAlpha(110)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(track)
         p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
@@ -497,7 +569,9 @@ class ControlBar(QWidget):
         light = False
         try:
             light = theme.is_light()
-            base = QColor(theme.theme()['bg'] if light
+            # На светлой теме подложка окна темнее основного цвета, а
+            # панель управления должна оставаться светлой.
+            base = QColor(theme.theme()['panel'] if light
                           else theme.theme()['bg_deep'])
         except Exception:
             base = QColor('#0b0f14')

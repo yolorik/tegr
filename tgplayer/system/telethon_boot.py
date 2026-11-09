@@ -19,6 +19,7 @@ telethon_connections = None
 telethon_utils = None
 MessageMediaDocument = None
 DocumentAttributeVideo = None
+InputMessagesFilterVideo = None
 DialogFilter = None
 Channel = None
 Chat = None
@@ -51,7 +52,8 @@ def loaded():
 def load():
     """Загружает Telethon один раз, безопасно для нескольких потоков."""
     global TelegramClient, telethon_connections, telethon_utils
-    global MessageMediaDocument, DocumentAttributeVideo, DialogFilter
+    global MessageMediaDocument, DocumentAttributeVideo
+    global InputMessagesFilterVideo, DialogFilter
     global Channel, Chat, GetDialogFiltersRequest, UpdateDialogFilterRequest
     global SearchContacts, JoinChannelRequest, LeaveChannelRequest
     global SessionPasswordNeededError, PhoneCodeInvalidError
@@ -70,8 +72,9 @@ def load():
         from telethon import utils as _utils
         from telethon.tl.types import (
             MessageMediaDocument as _MMD,
-            DocumentAttributeVideo as _DAV, DialogFilter as _DF,
-            Channel as _Ch, Chat as _Chat)
+            DocumentAttributeVideo as _DAV,
+            InputMessagesFilterVideo as _IMFV,
+            DialogFilter as _DF, Channel as _Ch, Chat as _Chat)
         from telethon.tl.functions.messages import (
             GetDialogFiltersRequest as _GDF, UpdateDialogFilterRequest as _UDF)
         from telethon.tl.functions.contacts import SearchRequest as _SC
@@ -96,6 +99,7 @@ def load():
         telethon_utils = _utils
         MessageMediaDocument = _MMD
         DocumentAttributeVideo = _DAV
+        InputMessagesFilterVideo = _IMFV
         DialogFilter = _DF
         Channel = _Ch
         Chat = _Chat

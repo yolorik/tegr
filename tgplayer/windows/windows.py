@@ -754,10 +754,6 @@ class SettingsDialog(QDialog):
         self.chk_list = self._check(
             win_lay, 'playlist_panel', 'Показывать список роликов канала',
             values.get('playlist_panel'))
-        self.chk_osd_below = self._check(
-            win_lay, 'osd_below_bar',
-            'Подсказки (громкость, перемотка) под панелью управления',
-            values.get('osd_below_bar'))
         body.addWidget(win)
 
         # --- Кэш ---
@@ -1437,6 +1433,10 @@ class RowDelegate(QStyledItemDelegate):
     """
 
     PAD_X = 10
+    # Вторая строка канала (например, @username или число
+    # непросмотренных). Отдельная роль, чтобы не мешать UserRole,
+    # в котором у списка видео хранится индекс ролика.
+    SUB_ROLE = Qt.ItemDataRole.UserRole + 7
 
     def __init__(self, icon_size=28, parent=None):
         super().__init__(parent)
@@ -1444,9 +1444,10 @@ class RowDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         hint = super().sizeHint(option, index)
-        return QSize(
-            hint.width(),
-            max(hint.height(), theme.scale_px(self.icon_size) + theme.scale_px(14)))
+        tall = theme.scale_px(self.icon_size) + theme.scale_px(14)
+        if index.data(self.SUB_ROLE):
+            tall = theme.scale_px(self.icon_size) + theme.scale_px(34)
+        return QSize(hint.width(), max(hint.height(), tall))
 
     def _icon_start(self):
         """Откуда начинается картинка от левого края строки.
@@ -1456,8 +1457,8 @@ class RowDelegate(QStyledItemDelegate):
         отступ берём такой же: иначе она сдвигается влево и упирается
         в край выделения.
         """
-        pad = theme.scale_px(self.PAD_X)
-        return pad + pad
+        # В плоской раскладке до аватара 16 px от края пункта.
+        return theme.scale_px(16)
 
     def paint(self, painter, option, index):
         # Состояние «строка пустая, виджет нарисован поверх» — обычная
@@ -1485,21 +1486,52 @@ class RowDelegate(QStyledItemDelegate):
                 painter.drawPixmap(x, y, pm)
                 x += icon_px + theme.scale_px(10)
             if text:
-                font = QFont(opt.font)
-                painter.setFont(font)
-                fm = painter.fontMetrics()
                 selected = bool(opt.state & QStyle.StateFlag.State_Selected)
                 color = opt.palette.color(
                     QPalette.ColorGroup.Normal,
                     QPalette.ColorRole.HighlightedText if selected
                     else QPalette.ColorRole.Text)
-                painter.setPen(color)
                 avail = rect.right() - theme.scale_px(self.PAD_X) - x
-                elided = fm.elidedText(str(text),
-                                       Qt.TextElideMode.ElideRight, avail)
-                text_y = rect.top() + (rect.height() - fm.height()) // 2 \
-                    + fm.ascent()
-                painter.drawText(QPoint(x, text_y), elided)
+                sub = index.data(self.SUB_ROLE)
+                if sub:
+                    # Две строки: название сверху, подпись снизу.
+                    title_font = QFont(opt.font)
+                    title_font.setPixelSize(theme.scale_px(13))
+                    sub_font = QFont(opt.font)
+                    sub_font.setPixelSize(theme.scale_px(11))
+                    tfm = QFontMetrics(title_font)
+                    sfm = QFontMetrics(sub_font)
+                    gap = theme.scale_px(2)
+                    block_h = tfm.height() + gap + sfm.height()
+                    top = rect.top() + (rect.height() - block_h) // 2
+                    title = tfm.elidedText(
+                        str(text), Qt.TextElideMode.ElideRight, avail)
+                    subtitle = sfm.elidedText(
+                        str(sub), Qt.TextElideMode.ElideRight, avail)
+                    painter.setFont(title_font)
+                    painter.setPen(color)
+                    painter.drawText(
+                        QPoint(x, top + tfm.ascent()), title)
+                    painter.setFont(sub_font)
+                    try:
+                        dim = QColor(theme.theme().get('text_dim')
+                                     or '#8e8a82')
+                    except Exception:
+                        dim = QColor('#8e8a82')
+                    painter.setPen(dim)
+                    painter.drawText(
+                        QPoint(x, top + tfm.height() + gap + sfm.ascent()),
+                        subtitle)
+                else:
+                    font = QFont(opt.font)
+                    painter.setFont(font)
+                    fm = painter.fontMetrics()
+                    painter.setPen(color)
+                    elided = fm.elidedText(str(text),
+                                           Qt.TextElideMode.ElideRight, avail)
+                    text_y = rect.top() + (rect.height() - fm.height()) // 2 \
+                        + fm.ascent()
+                    painter.drawText(QPoint(x, text_y), elided)
         finally:
             painter.restore()
 
@@ -1509,7 +1541,7 @@ class DownloadBadge(QToolButton):
 
     Показывает состояние ролика и передаёт нажатие наружу:
     пока загрузка не идёт — стрелка в лоток (скачать),
-    пока качается — крестик (остановить, скачанное остаётся),
+    пока качается или стоит на паузе — крестик (отменить и удалить),
     когда ролик целиком в кэше — корзина (удалить из кэша).
     """
 
@@ -1551,12 +1583,9 @@ class DownloadBadge(QToolButton):
         if state == 'done':
             self.setIcon(icons.get_icon('trash'))
             self.setToolTip('Удалить из кэша')
-        elif state == 'busy':
+        elif state in ('busy', 'paused'):
             self.setIcon(icons.get_icon('cancel'))
             self.setToolTip('Отменить загрузку и удалить из кэша')
-        elif state == 'paused':
-            self.setIcon(icons.get_icon('download'))
-            self.setToolTip('Продолжить загрузку')
         else:
             self.setIcon(icons.get_icon('download'))
             self.setToolTip('Скачать в кэш')
@@ -1600,7 +1629,9 @@ class VideoRow(QWidget):
     # при наведении накрывает край списка, и значок у самого края
     # обрезался ею.
     ICON_INSET = 10
-    ROW_H = 34
+    ROW_H = 44
+    VERTICAL_NUDGE = 0
+    TEXT_NUDGE = 0
 
     @classmethod
     def row_height(cls):
@@ -1611,6 +1642,10 @@ class VideoRow(QWidget):
         super().__init__(parent)
         self.index = index
         self.text = text
+        self.title = ''
+        self.meta = ''
+        self.watched = False
+        self._split_text(text)
         self._on_action = on_action
         self._progress = 0.0
         self._state = 'idle'
@@ -1622,6 +1657,9 @@ class VideoRow(QWidget):
         self._text_left = theme.scale_px(self.TEXT_LEFT)
         self._right_pad = theme.scale_px(self.RIGHT_PAD)
         self._icon_inset = theme.scale_px(self.ICON_INSET)
+        self._v_nudge = theme.scale_px(self.VERTICAL_NUDGE)
+        self._text_nudge = int(round(
+            self.TEXT_NUDGE * theme.ui_scale() / 100.0))
         # Строка прозрачна: фон и выделение рисует сам список.
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1656,13 +1694,32 @@ class VideoRow(QWidget):
 
     def set_text(self, text):
         self.text = text
+        self._split_text(text)
         self.update()
+
+    def _split_text(self, text):
+        """Делит строку на название и метаданные.
+
+        _video_suffix() склеивает их через «   · » (три пробела). В
+        плоском макете название стоит слева, а длительность и размер —
+        справа; для этого их нужно рисовать раздельно.
+        """
+        raw = str(text or '')
+        self.watched = raw.startswith('✓ ')
+        if self.watched:
+            raw = raw[2:]
+        if '   · ' in raw:
+            title, meta = raw.split('   · ', 1)
+        else:
+            title, meta = raw, ''
+        self.title = title.strip()
+        self.meta = meta.strip()
 
     def _place_badge(self):
         """Ставит значок в правый верхний угол по центру строки."""
         self.badge.move(
             self.width() - self._icon_inset - self._bar_w,
-            (self.height() - self._bar_w) // 2)
+            (self.height() - self._bar_w) // 2 + self._v_nudge)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1700,63 +1757,109 @@ class VideoRow(QWidget):
     def _icon_rect(self):
         """Место значка: правый край строки, по центру по вертикали."""
         return QRect(self.width() - self._icon_inset - self._bar_w,
-                     (self.height() - self._bar_w) // 2,
+                     (self.height() - self._bar_w) // 2 + self._v_nudge,
                      self._bar_w, self._bar_w)
 
+    @staticmethod
+    def _ink_baseline(fm, value, height):
+        """Базовая линия, при которой видимые буквы стоят по центру."""
+        ink = fm.tightBoundingRect(value or 'A')
+        if ink.height() > 0:
+            return int(round((height - ink.height()) / 2 - ink.top()))
+        return (height - fm.height()) // 2 + fm.ascent()
+
     def paintEvent(self, event):
-        """Название слева, полоса прогресса — перед значком."""
+        """Название слева, длительность и размер — справа."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         try:
-            color = QColor(theme.theme().get('text') or '#ffffff')
+            pal = theme.theme()
+            color = QColor(pal.get('text') or '#ffffff')
+            dim = QColor(pal.get('text_dim') or '#8e8a82')
+            accent = QColor(pal.get('accent') or '#5288c1')
         except Exception:
             color = QColor('#ffffff')
-        font = QFont(self.font())
-        font.setPixelSize(theme.scale_px(13))
-        p.setFont(font)
-        fm = p.fontMetrics()
-        # Текст занимает всё, кроме значка и места под полосу справа.
-        gap = theme.scale_px(14)
-        right = self._bar_w + self._progress_w + self._icon_inset + gap
-        if self._state not in ('busy', 'paused'):
-            right = self._bar_w + self._icon_inset + gap
-        rect = self.rect().adjusted(0, 0, -right, 0)
-        elided = fm.elidedText(
-            self.text, Qt.TextElideMode.ElideRight, rect.width())
-        # Высоту строки текста центрируем по вертикали вручную:
-        # AlignVCenter с учётом спуска шрифта опускает текст на точку.
-        text_y = (self.height() - fm.height()) // 2 + fm.ascent()
+            dim = QColor('#8e8a82')
+            accent = QColor('#5288c1')
+
+        title_font = QFont(self.font())
+        title_font.setPixelSize(theme.scale_px(13))
+        meta_font = QFont(self.font())
+        meta_font.setPixelSize(theme.scale_px(12))
+        title_fm = QFontMetrics(title_font)
+        meta_fm = QFontMetrics(meta_font)
+
+        # Справа всегда оставляем место под значок скачивания: он
+        # появляется при наведении, и текст не должен из-за этого
+        # прыгать.
+        right = self._bar_w + self._icon_inset + theme.scale_px(6)
+        content_right = max(self._text_left + theme.scale_px(40),
+                            self.width() - right)
+
+        # Метка просмотра — отдельно от названия, акцентным цветом.
+        check_w = 0
+        if self.watched:
+            check_w = theme.scale_px(18)
+            p.setFont(title_font)
+            p.setPen(accent)
+            check_y = self._ink_baseline(title_fm, '✓', self.height())
+            p.drawText(QPoint(self._text_left, check_y), '✓')
+
+        meta_text = self.meta
+        meta_w = meta_fm.horizontalAdvance(meta_text) if meta_text else 0
+        title_left = self._text_left + check_w
+        # Если места мало, сначала ужимаем метаданные, потом название.
+        max_meta = max(0, content_right - title_left - theme.scale_px(48))
+        if meta_w > max_meta:
+            meta_text = meta_fm.elidedText(
+                meta_text, Qt.TextElideMode.ElideRight, max_meta)
+            meta_w = meta_fm.horizontalAdvance(meta_text) if meta_text else 0
+        title_right = content_right
+        if meta_text:
+            title_right = content_right - meta_w - theme.scale_px(12)
+        title_text = title_fm.elidedText(
+            self.title, Qt.TextElideMode.ElideRight,
+            max(0, int(title_right - title_left)))
+        p.setFont(title_font)
         p.setPen(color)
-        p.drawText(QPoint(self._text_left, text_y), elided)
+        p.drawText(QPoint(title_left,
+                          self._ink_baseline(title_fm, title_text,
+                                             self.height())),
+                   title_text)
+        if meta_text:
+            p.setFont(meta_font)
+            p.setPen(dim)
+            p.drawText(QPoint(content_right - meta_w,
+                              self._ink_baseline(meta_fm, meta_text,
+                                                 self.height())),
+                       meta_text)
         p.end()
         if self._state == 'paused':
-            # На паузе вместо полосы — серый след: видно, что загрузка
-            # начата, но стоит.
-            self._paint_progress(1.0, paused=True)
+            self._paint_progress(self._progress, paused=True)
             return
         if self._state != 'busy':
             return
         self._paint_progress(self._progress)
 
     def _paint_progress(self, progress, paused=False):
+        """Тонкая полоса внизу строки — как в плоском макете."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w = self._progress_w
-        h = self._bar_h
-        # Слева от значка: значок стоит у правого края строки.
-        x = (self.width() - self._icon_inset - self._bar_w
-             - theme.scale_px(8) - w)
-        y = (self.height() - h) // 2
+        h = max(1, theme.scale_px(2))
+        x = self._text_left
+        # Не заезжаем под значок скачивания.
+        right = self.width() - self._icon_inset - self._bar_w
+        w = max(1, right - x)
+        y = self.height() - h - 1
         try:
             accent = QColor(theme.theme()['accent'])
         except Exception:
             accent = QColor('#5288c1')
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 60))
-        p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
-        p.setBrush(QColor(255, 255, 255, 110) if paused else accent)
-        p.drawRoundedRect(QRectF(x, y, max(1.0, w * progress), h),
-                          h / 2, h / 2)
+        p.setBrush(QColor(255, 255, 255, 45))
+        p.drawRect(QRectF(x, y, w, h))
+        p.setBrush(QColor('#f2b84b') if paused else accent)
+        p.drawRect(QRectF(x, y, max(1.0, w * progress), h))
         p.end()
 
 
@@ -1765,6 +1868,8 @@ class HistoryRow(QWidget):
 
     ROW_H = 52
     TEXT_LEFT = 10
+    VERTICAL_NUDGE = 0
+    TEXT_NUDGE = 0
 
     @classmethod
     def row_height(cls):
@@ -1783,6 +1888,9 @@ class HistoryRow(QWidget):
         self._check_x = theme.scale_px(8)
         self._check_size = theme.scale_px(18)
         self._check_gap = theme.scale_px(8)
+        self._v_nudge = theme.scale_px(self.VERTICAL_NUDGE)
+        self._text_nudge = int(round(
+            self.TEXT_NUDGE * theme.ui_scale() / 100.0))
         # Фон и выделение рисует список, как и у строк роликов.
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1813,7 +1921,9 @@ class HistoryRow(QWidget):
     def _place_check(self):
         size = self._check_size
         self.check.setFixedSize(size, size)
-        self.check.move(self._check_x, max(0, (self.height() - size) // 2))
+        self.check.move(
+            self._check_x,
+            max(0, (self.height() - size) // 2 + self._v_nudge))
         self.check.raise_()
 
     def _on_toggled(self, checked):
@@ -1839,8 +1949,10 @@ class HistoryRow(QWidget):
             text, dim = QColor('#ffffff'), QColor('#9a9a9a')
 
         rect = self.rect().adjusted(
-            self._text_x, theme.scale_px(5),
-            -theme.scale_px(10), -theme.scale_px(5))
+            self._text_x,
+            theme.scale_px(5) + self._v_nudge + self._text_nudge,
+            -theme.scale_px(10),
+            -theme.scale_px(5) + self._v_nudge + self._text_nudge)
         font = QFont(self.font())
         font.setPixelSize(theme.scale_px(13))
         p.setFont(font)
@@ -1897,8 +2009,8 @@ class DownloadsView(QWidget):
         self.list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_menu)
-        # В режиме выбора двойной клик/Enter по строке переключает
-        # галочку, как и в списке истории.
+        # Двойной клик/Enter по строке открывает ролик в плеере; в
+        # режиме выбора — переключает галочку, как в списке истории.
         self.list.itemActivated.connect(self._on_item_activated)
         lay.addWidget(self.list, 1)
 
@@ -1919,6 +2031,9 @@ class DownloadsView(QWidget):
         self.btn_delete_selected.hide()
 
         bottom = QHBoxLayout()
+        # Небольшой правый отступ: в узком окне кнопка иначе упирается
+        # в край окна и её текст срезается рамкой.
+        bottom.setContentsMargins(0, 0, theme.scale_px(8), 0)
         bottom.addWidget(self.btn_select)
         bottom.addWidget(self.btn_delete_selected)
         bottom.addStretch(1)
@@ -1976,12 +2091,14 @@ class DownloadsView(QWidget):
         self._sync_delete_button()
 
     def _on_item_activated(self, item):
-        """Двойной клик/Enter в режиме выбора переключает галочку."""
-        if not self.select_mode:
-            return
+        """Двойной клик/Enter: в режиме выбора — галочка, иначе плеер."""
         row = self.list.itemWidget(item)
-        if isinstance(row, DownloadRow):
+        if not isinstance(row, DownloadRow):
+            return
+        if self.select_mode:
             row.check.toggle()
+        else:
+            self._on_action(row.entry, 'open')
 
     def _sync_delete_button(self):
         self.btn_delete_selected.setEnabled(bool(self.checked))
@@ -2065,6 +2182,7 @@ class DownloadsView(QWidget):
             return
         state = entry.get('state') or 'busy'
         menu = QMenu(self)
+        act_open = menu.addAction('Открыть в плеере')
         act_goto = menu.addAction('Перейти к ролику на канале')
         menu.addSeparator()
         if state == 'done':
@@ -2082,7 +2200,9 @@ class DownloadsView(QWidget):
         chosen = menu.exec(self.list.viewport().mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is act_goto:
+        if chosen is act_open:
+            self._on_action(entry, 'open')
+        elif chosen is act_goto:
             self._on_action(entry, 'goto')
         elif act_pause is not None and chosen is act_pause:
             self._on_action(entry, 'pause' if state != 'paused'
@@ -2094,7 +2214,7 @@ class DownloadsView(QWidget):
 
 
 class DownloadRow(QWidget):
-    """Строка загрузки: название, полоса, скорость и кнопка.
+    """Строка загрузки: название, полоса, скорость и кнопки.
 
     Название рисуется своим paintEvent — так же, как в списке роликов:
     QLabel внутри строки списка Qt сжимала, и текст обрезался.
@@ -2110,6 +2230,12 @@ class DownloadRow(QWidget):
     ROW_EXTRA = 2
     # Отступ значка от правого края, как в строке ролика.
     ICON_GAP = 10
+    # Отступ между кнопкой паузы и значком действия, а также между
+    # полосой прогресса и кнопкой паузы.
+    ACTION_GAP = 4
+    BAR_GAP = 6
+    VERTICAL_NUDGE = 0
+    TEXT_NUDGE = 0
 
     @classmethod
     def row_height(cls):
@@ -2132,6 +2258,13 @@ class DownloadRow(QWidget):
         self._bar_w = theme.scale_px(self.BAR_W)
         self._row_extra = theme.scale_px(self.ROW_EXTRA)
         self._icon_gap = theme.scale_px(self.ICON_GAP)
+        self._action_gap = theme.scale_px(self.ACTION_GAP)
+        self._bar_gap = theme.scale_px(self.BAR_GAP)
+        # Карточка строки из QSS выше виджета на поля рамки: без
+        # небольшого сдвига весь текст садился к верху.
+        self._v_nudge = theme.scale_px(self.VERTICAL_NUDGE)
+        self._text_nudge = int(round(
+            self.TEXT_NUDGE * theme.ui_scale() / 100.0))
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
@@ -2147,9 +2280,26 @@ class DownloadRow(QWidget):
         # на поля строки списка, и раскладка центрировала бы значок по
         # виджету, то есть выше центра выделения.
         self.badge = DownloadBadge(self)
-        self.badge.raise_()
-        self._place_badge()
         self.badge.clicked.connect(self._clicked)
+        # Пауза/продолжение — отдельной кнопкой: раньше остановить
+        # загрузку можно было только через ПКМ.
+        self.pause_btn = QToolButton(self)
+        self.pause_btn.setIconSize(QSize(theme.scale_px(18),
+                                        theme.scale_px(18)))
+        self.pause_btn.setFixedSize(self._btn_w, self._btn_w)
+        self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.pause_btn.setStyleSheet(
+            'QToolButton { background: transparent; border: none;'
+            ' padding: 0px; }'
+            'QToolButton:hover {'
+            ' background: rgba(255, 255, 255, 0.12);'
+            f' border-radius: {theme.scale_px(13)}px; }}')
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        self.pause_btn.hide()
+        self._place_badge()
+        self.badge.raise_()
+        self.pause_btn.raise_()
 
         self.check = QCheckBox(self)
         self.check.setStyleSheet('QCheckBox { background: transparent; }')
@@ -2175,7 +2325,9 @@ class DownloadRow(QWidget):
     def _place_check(self):
         size = self._check_size
         self.check.setFixedSize(size, size)
-        self.check.move(self._check_x, max(0, (self.height() - size) // 2))
+        self.check.move(
+            self._check_x,
+            max(0, (self.height() - size) // 2 + self._v_nudge))
         self.check.raise_()
 
     def _on_toggled(self, checked):
@@ -2184,18 +2336,23 @@ class DownloadRow(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._place_badge()
         self._place_check()
 
     def _place_badge(self):
-        self.badge.move(
-            self.width() - self._icon_gap - self._btn_w,
-            (self.height() - self._btn_w) // 2 + self._row_extra // 2)
+        y = ((self.height() - self._btn_w) // 2 + self._row_extra // 2
+             + self._v_nudge)
+        badge_x = self.width() - self._icon_gap - self._btn_w
+        self.badge.move(badge_x, y)
+        self.pause_btn.move(
+            badge_x - self._action_gap - self._btn_w, y)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._place_badge()
         self._place_check()
         self.badge.raise_()
+        self.pause_btn.raise_()
 
     def _refresh_badge(self):
         state = self.entry.get('state') or 'busy'
@@ -2204,6 +2361,34 @@ class DownloadRow(QWidget):
             # Готовую строку и строки с действием показываем без
             # наведения: у них значок — не предложение, а состояние.
             self.badge.set_hover(True)
+        self._refresh_pause(state)
+
+    def _refresh_pause(self, state):
+        """Кнопка паузы есть только у идущей и приостановленной загрузки."""
+        active = state in ('busy', 'paused')
+        self.pause_btn.setVisible(active)
+        if not active:
+            return
+        if state == 'paused':
+            self.pause_btn.setIcon(icons.get_icon('play'))
+            self.pause_btn.setToolTip('Продолжить загрузку')
+        else:
+            self.pause_btn.setIcon(icons.get_icon('pause'))
+            self.pause_btn.setToolTip('Приостановить загрузку')
+
+    def _toggle_pause(self):
+        """Пауза или продолжение загрузки по отдельной кнопке."""
+        state = self.entry.get('state')
+        if state == 'busy':
+            action = 'pause'
+        elif state == 'paused':
+            action = 'resume'
+        else:
+            return
+        try:
+            self._on_action(self.entry, action)
+        except Exception as ex:
+            print(f"[Кэш] {ex}")
 
     def update_entry(self, entry):
         self.entry = dict(entry)
@@ -2212,11 +2397,11 @@ class DownloadRow(QWidget):
 
     def _clicked(self):
         state = self.entry.get('state')
-        # Нажатие по значку делает два разных действия, поэтому
-        # спрашиваем: у скачанного — удаление, у идущей загрузки —
-        # отмена, у стоящей — продолжение.
+        # Значок справа — действие с файлом: у скачанного — удаление,
+        # у идущей и стоящей загрузки — отмена с удалением. Пауза и
+        # продолжение живут на отдельной кнопке.
         action = {'done': 'delete', 'busy': 'cancel',
-                  'paused': 'resume'}.get(state, 'cancel')
+                  'paused': 'cancel'}.get(state, 'cancel')
         try:
             self._on_action(self.entry, action)
         except Exception as ex:
@@ -2266,25 +2451,27 @@ class DownloadRow(QWidget):
         small.setPixelSize(theme.scale_px(10))
         fm_small = QFontMetrics(small)
 
-        # Справа — значок, слева от него полоса прогресса (пока идёт
-        # загрузка или она на паузе), ещё левее — подписи. Ширину
-        # подписей считаем свою: иначе они стояли бы не там, где
-        # кончается название.
+        # Справа — значок действия и кнопка паузы, левее — полоса
+        # прогресса (пока идёт загрузка или она на паузе), ещё левее —
+        # подписи. Ширину подписей считаем свою: иначе они стояли бы не
+        # там, где кончается название.
         right = self._btn_w + self._icon_gap
         if state in ('busy', 'paused'):
+            right += self._btn_w + self._action_gap
             right += self._bar_w + theme.scale_px(8)
         sub_w = max(fm_small.horizontalAdvance(sub),
                     fm_small.horizontalAdvance(speed_text)) + theme.scale_px(10)
         # Центр строки по вертикали — тот же, что у значка: выделение
         # выше виджета на поля строки списка.
-        center_y = (self.height() + self._row_extra) // 2
+        center_y = (self.height() + self._row_extra) // 2 + self._v_nudge
+        text_center_y = center_y + self._text_nudge
 
         # Две строки текста (название и канал) стоят блоком по центру
         # выделения. Считаем общую высоту блока и рисуем сверху вниз,
         # поэтому канал больше не уезжает за нижний край строки.
         line_gap = theme.scale_px(1)
         total_h = fm.height() + line_gap + fm_small.height()
-        block_top = center_y - total_h // 2
+        block_top = text_center_y - total_h // 2
         title_y = block_top + fm.ascent()
         p.setFont(font)
         p.setPen(color)
@@ -2315,7 +2502,7 @@ class DownloadRow(QWidget):
         sub_h = fm_small.height() * (2 if speed_text else 1)
         if speed_text:
             sub_h += line_gap
-        sub_top = center_y - sub_h // 2
+        sub_top = text_center_y - sub_h // 2
         p.drawText(QPoint(sub_x - fm_small.horizontalAdvance(sub),
                           sub_top + fm_small.ascent()), sub)
         if speed_text:
@@ -2331,9 +2518,9 @@ class DownloadRow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self._bar_w, theme.scale_px(4)
-        gap = theme.scale_px(6)
-        x = self.width() - w - gap - self._btn_w - gap
-        y = (self.height() - h) // 2
+        x = (self.width() - self._icon_gap - self._btn_w
+             - self._action_gap - self._btn_w - self._bar_gap - w)
+        y = (self.height() - h) // 2 + self._v_nudge
         try:
             accent = QColor(theme.theme()['accent'])
         except Exception:
@@ -2371,6 +2558,7 @@ class SearchLineEdit(QLineEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._flat = False
         self._clear = QToolButton(self)
         self._clear.setIcon(icons.get_icon('close'))
         self._clear.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2380,6 +2568,35 @@ class SearchLineEdit(QLineEdit):
         self.textChanged.connect(self._sync_clear)
         self.refit()
         self._clear.hide()
+
+    def set_flat_search(self, on):
+        """Плоский поиск: без рамки, с лупой слева и линией снизу.
+
+        Включается только в окне Tegr: в старом окне поле остаётся
+        прежним.
+        """
+        self._flat = bool(on)
+        self.refit()
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not getattr(self, '_flat', False):
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        try:
+            ink = QColor(theme.theme().get('text_dim') or '#888888')
+        except Exception:
+            ink = QColor('#888888')
+        p.setPen(QPen(ink, max(1.0, theme.scale_px(1.2))))
+        d = theme.scale_px(9)
+        x = theme.scale_px(8)
+        y = (self.height() - d) / 2
+        p.drawEllipse(QRectF(x, y, d, d))
+        p.drawLine(QPointF(x + d - 2, y + d - 2),
+                   QPointF(x + d + 2, y + d + 2))
+        p.end()
 
     def refit(self):
         """Пересчитывает крестик под текущий масштаб интерфейса."""
@@ -2392,8 +2609,10 @@ class SearchLineEdit(QLineEdit):
             "QToolButton:hover { background: rgba(128, 128, 128, 0.30); }"
             "QToolButton:pressed { background: rgba(128, 128, 128, 0.45); }"
         )
-        # Место под крестик: иначе текст уезжает под кнопку.
-        self.setTextMargins(0, 0, theme.scale_px(24), 0)
+        # Место под крестик: иначе текст уезжает под кнопку. В плоском
+        # поиске слева ещё и лупа, поэтому добавляем отступ и слева.
+        left = theme.scale_px(24) if getattr(self, '_flat', False) else 0
+        self.setTextMargins(left, 0, theme.scale_px(24), 0)
         self._place_clear()
 
     def _sync_clear(self, text):
@@ -3781,11 +4000,6 @@ class MainWindow(QMainWindow):
             elif key == 'playlist_panel':
                 if bool(getattr(pw, '_playlist_shown', False)) != bool(value):
                     pw._toggle_playlist()
-            elif key == 'osd_below_bar':
-                # Подсказка, если сейчас видна, переезжает на новое место.
-                if (getattr(pw, '_osd_window', None) is not None
-                        and pw._osd_window.isVisible()):
-                    pw._place_window_osd()
         except Exception:
             pass
 
@@ -3975,21 +4189,26 @@ class MainWindow(QMainWindow):
         mine = []
         for d in getattr(self, 'current_dialogs', []):
             name = self._dialog_display_name(d)
-            if not query or query in name.lower():
-                mine.append(d)
-        # Внутри групп — по алфавиту. Избранное остаётся сверху, каналы
-        # без видео — внизу: это осознанные группы, и ломать их ради
-        # строгого алфавита было бы хуже. QCollator учитывает локаль, а
-        # не коды Unicode: иначе «Ё» уезжала бы после «Я».
+            if query and query not in name.lower():
+                continue
+            # Каналы, где проверка видео не нашла, в списке не показываем
+            # вовсе. Непроверенные оставляем: «нет видео» — это вывод, а
+            # не догадка, и прятать канал до проверки нельзя.
+            if self._video_rank(d) == 2:
+                continue
+            mine.append(d)
+        # Внутри групп — по алфавиту. Избранное остаётся сверху: это
+        # осознанная группа, и ломать её ради строгого алфавита было бы
+        # хуже. QCollator учитывает локаль, а не коды Unicode: иначе «Ё»
+        # уезжала бы после «Я».
         collator = QCollator()
         collator.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         collator.setNumericMode(True)
         mine.sort(key=lambda d: (
-            self._empty_note(d) != '',
+            self._video_rank(d),
             0 if self._is_favorite(d) else 1,
             collator.sortKey(self._dialog_display_name(d)),
         ))
-        self._empty_shown = sum(1 for d in mine if self._empty_note(d))
 
         self.channel_list.blockSignals(True)
         self.channel_list.clear()
@@ -4003,11 +4222,25 @@ class MainWindow(QMainWindow):
             mark = '★ ' if self._is_favorite(d) else ''
             item = QListWidgetItem(
                 icons.get_avatar_icon(name, theme.scale_px(28)), mark + name)
-            # Цвет у всех каналов один: раньше каналы без видео были серыми,
-            # и список выглядел так, будто программа покрасила половину
-            # строк случайно. «Нет видео» и так видно по месту в списке и по
-            # подсказке при наведении.
-            item.setToolTip(name)
+            # Цвет у всех каналов один: раньше отметки делали строки
+            # разными, и список выглядел так, будто программа покрасила
+            # половину строк случайно.
+            note = 'есть видео' if self._video_rank(d) == 0 else ''
+            item.setToolTip(name + (f' · {note}' if note else ''))
+            # Вторая строка: непросмотренные, иначе @username, иначе тип.
+            try:
+                entity = getattr(d, 'entity', None)
+                username = getattr(entity, 'username', '') or ''
+                unread = int(getattr(d, 'unread_count', 0) or 0)
+                if unread > 0:
+                    subtitle = f'{unread} непросмотренных'
+                elif username:
+                    subtitle = f'@{username}'
+                else:
+                    subtitle = 'канал'
+            except Exception:
+                subtitle = 'канал'
+            item.setData(RowDelegate.SUB_ROLE, subtitle)
             self.channel_list.addItem(item)
             self._search_rows.append(('mine', d))
 
@@ -4033,12 +4266,6 @@ class MainWindow(QMainWindow):
             item.setToolTip(title)
             self.channel_list.addItem(item)
             self._search_rows.append(('found', found))
-
-        # Сколько каналов без видео — видно до конца списка: иначе
-        # канал просто «уехал» вниз без объяснения.
-        if self._empty_shown:
-            self._add_list_note(
-                f"— Без видео: {self._empty_shown} —")
 
         if not mine and not self._search_results:
             self._add_list_note('Ничего не найдено')
@@ -4102,19 +4329,17 @@ class MainWindow(QMainWindow):
                 or getattr(getattr(dialog, 'entity', None), 'title', '')
                 or '')
 
-    def _empty_note(self, dialog):
-        """Подпись «нет видео», если канал проверен и оказался пустым.
-
-        Пометка ставится по последним сообщениям канала, поэтому это
-        догадка: канал с роликами в глубине истории попадёт в «нет видео».
-        Открытие канала её снимает — настоящий список роликов важнее.
-        """
+    def _video_rank(self, dialog):
+        """0 — видео есть, 1 — неизвестно, 2 — проверено и нет."""
         peer_id = self.backend._dialog_peer_id(dialog)
         if peer_id is None:
-            return ''
-        if self.backend._dialog_has_video.get(peer_id) is False:
-            return 'нет видео'
-        return ''
+            return 1
+        has = self.backend._dialog_has_video.get(peer_id)
+        if has is True:
+            return 0
+        if has is False:
+            return 2
+        return 1
 
     def _on_channels_checked(self, result):
         """Фоновая проверка ответила по части каналов — пересобираем список."""
@@ -5041,7 +5266,7 @@ class MainWindow(QMainWindow):
                 # далеко ли до конца файла, было нельзя.
                 size = int(e.get('size') or 0)
                 have = int(e.get('downloaded_bytes') or 0)
-                size_text = (f'{utils.fmt_size(have)} из '
+                size_text = (f'{utils.fmt_size(have)} / '
                              f'{utils.fmt_size(size)}') if size else ''
                 speed_text = (utils.fmt_speed(speed) if speed > 0
                               else 'подготовка')
@@ -5115,7 +5340,11 @@ class MainWindow(QMainWindow):
         name = ''
         if message is not None:
             text = str(getattr(message, 'message', '') or '').strip()
-            name = text.split('\n')[0][:120] if text else ''
+            # Подпись часто разбита на строки («Викинги» / «Серия 1»),
+            # а название ролика — это вся первая часть подписи. Раньше
+            # бралась только первая строка, и в загрузках оставалось
+            # одно слово вместо названия.
+            name = ' '.join(text.split())[:120] if text else ''
             if not name:
                 name = (getattr(getattr(message, 'file', None), 'name', None)
                         or '')
@@ -5155,7 +5384,9 @@ class MainWindow(QMainWindow):
         doc_id = entry.get('doc_id')
         if doc_id is None:
             return
-        if action == 'goto':
+        if action == 'open':
+            self._open_download_item(entry)
+        elif action == 'goto':
             self._goto_video(entry)
         elif action == 'delete':
             self._cache_stopped.discard(doc_id)
@@ -5177,6 +5408,34 @@ class MainWindow(QMainWindow):
             self._resume_download(doc_id, entry)
         QTimer.singleShot(200, self._refresh_downloads_view)
         QTimer.singleShot(200, self._refresh_cache_rows)
+
+    def _open_download_item(self, entry):
+        """Открывает ролик из вкладки «Загрузки» в плеере.
+
+        Готовый файл играет из кэша, недокачанный продолжает загрузку с
+        того же места: плеер сам просит backend докачать ролик.
+        """
+        doc_id = entry.get('doc_id')
+        if doc_id is None:
+            return
+        message = self._entry_message(doc_id, entry)
+        document = getattr(getattr(message, 'media', None), 'document', None)
+        if message is not None and document is not None:
+            self._play_messages([message], 0, entry.get('channel') or '')
+            return
+
+        # Сообщения под рукой нет — запрашиваем его у Telegram по
+        # сохранённым peer_id и message_id, как это делает история.
+        peer_id = self._peer_id_int(entry.get('peer_id'))
+        message_id = entry.get('message_id')
+        if peer_id is None or message_id is None:
+            self.set_status('Не удалось открыть ролик из загрузок')
+            return
+        record = dict(entry)
+        record['peer_id'] = peer_id
+        record['message_id'] = message_id
+        self.set_status('Открываю ролик из загрузок...')
+        self.backend.fetch_history_message(record)
 
     def _delete_selected_downloads(self):
         """Удаляет отмеченные загрузки: готовые файлы и незавершённые."""
@@ -5771,11 +6030,12 @@ def _single_instance_guard():
         return True
     try:
         kernel32 = ctypes.windll.kernel32
-        # Имя мьютекса не меняем вместе с названием программы. Оно
-        # нужно, чтобы два экземпляра не делили одну сессию Telegram, —
-        # а старый TGPlayer и новый Tegr делят именно её. С новым именем
-        # они запустились бы оба и испортили файл сессии.
-        handle = kernel32.CreateMutexW(None, False, 'TGPlayerSingleInstance')
+        # У отдельной копии своё имя мьютекса: у неё собственные каталог
+        # данных и файл сессии, поэтому старый и новый плеер могут быть
+        # открыты одновременно. Два экземпляра этой копии по-прежнему
+        # делят одну сессию и второй запуск блокируется.
+        handle = kernel32.CreateMutexW(
+            None, False, 'TegrStudioSingleInstance')
         if not handle:
             return True
         if kernel32.GetLastError() == 183:      # ERROR_ALREADY_EXISTS

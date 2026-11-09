@@ -33,6 +33,17 @@ from ..core import config, history, log, paths, proxy, settings, utils
 from ..system import telethon_boot
 from ..widgets.widgets import DownloadTracker, _open_read, _piece_ranges
 
+CHANNEL_MARKS_FILE = 'channel_videos.json'
+# «Есть видео» можно не перепроверять месяц, «нет видео» — сутки:
+# канал мог опубликовать ролик после проверки.
+CHANNEL_MARK_TTL_TRUE = 30 * 24 * 60 * 60
+CHANNEL_MARK_TTL_FALSE = 24 * 60 * 60
+# Версия способа проверки. Пометки «нет видео», полученные старым
+# перебором последних сообщений, могли быть ложными: сервер теперь ищет
+# по всей истории. Такие пометки не загружаем — канал перепроверится.
+CHANNEL_MARK_VERSION = 2
+
+
 def _normalize_phone(text):
     """Приводит номер к виду, который понимает Telegram: плюс и цифры.
 
@@ -195,6 +206,7 @@ class TelegramBackend(QObject):
         # меняется медленно, а перепроверка при каждом нажатии на канал
         # стоила бы отдельного запроса в Telegram.
         self._dialog_has_video = {}
+        self._channel_marks_ts = {}
         # Проверка каналов на видео идёт в фоне и может быть не запущена:
         # без неё кнопки «Догрузить» просто нет, а список работает как
         # раньше.
@@ -209,6 +221,11 @@ class TelegramBackend(QObject):
         # Есть ли в канале ещё не прочитанная история: по этому признаку
         # в конце списка роликов показывается кнопка догрузки.
         self._video_more = {}
+        # Самое старое прочитанное сообщение канала: граница для
+        # следующей догрузки. Нужна и каналу без роликов в первой
+        # странице — иначе старые ролики было бы не найти.
+        self._video_offset = {}
+        self._load_channel_marks()
 
         # Готовые группы качеств строятся одновременно со списком видео.
         self._video_qualities = {}
@@ -1563,12 +1580,10 @@ class TelegramBackend(QObject):
         self._videos_by_dialog.clear()
         self._video_qualities.clear()
         self._quality_groups.clear()
-        # Пометки «нет видео» снимаем, «есть видео» оставляем: список
-        # каналов могли пополнить, а уже найденное видео никуда не делось.
-        for key, has in list(self._dialog_has_video.items()):
-            if not has:
-                self._dialog_has_video.pop(key, None)
+        # Пометки не сбрасываем: они лежат в channel_videos.json и
+        # перепроверяются по сроку, а не при каждом обновлении.
         self._video_more.clear()
+        self._video_offset.clear()
         await self.load_data()
 
     async def search_channels(self, query):
@@ -2017,7 +2032,7 @@ class TelegramBackend(QObject):
 
         Порядок проверки — от дешёвого к дорогому:
           1. последнее сообщение канала (оно уже пришло со списком);
-          2. только если там нет видео — кусок истории от него.
+          2. только если там нет видео — поиск по видео на сервере.
 
         Второй шаг — отдельный запрос на канал, поэтому их число
         ограничено CHANNEL_SCAN_LIMIT. Остаток каналов остаётся без пометки:
@@ -2025,6 +2040,7 @@ class TelegramBackend(QObject):
         """
         found = {}
         pending = []
+        now = time.time()
         for dialog in dialogs or []:
             key = getattr(dialog, 'id', None)
             if key is None:
@@ -2032,43 +2048,135 @@ class TelegramBackend(QObject):
             last = getattr(dialog, 'message', None)
             if last is not None and self._message_has_video(last):
                 found[key] = True
-            else:
-                pending.append(dialog)
+                continue
+            # Уже проверяли — не тратим запрос. «Есть видео» живёт
+            # дольше, «нет видео» перепроверяем чаще.
+            cached = self._dialog_has_video.get(key)
+            ts = self._channel_marks_ts.get(key, 0)
+            ttl = (CHANNEL_MARK_TTL_TRUE if cached
+                   else CHANNEL_MARK_TTL_FALSE)
+            if cached is not None and now - ts < ttl:
+                found[key] = cached
+                continue
+            pending.append(dialog)
 
         checked = 0
+        unknown = []
         for dialog in pending:
             if checked >= config.CHANNEL_SCAN_LIMIT or self._closed:
                 break
-            found[getattr(dialog, 'id', None)] = \
-                await self._has_video_further(dialog)
+            key = getattr(dialog, 'id', None)
+            result = await self._has_video_further(dialog)
             checked += 1
+            if result is None:
+                # Проверка не удалась (сеть, FloodWait, закрытая история).
+                # Такой канал нельзя считать пустым и прятать из списка:
+                # лучше оставить его видимым, чем ошибиться.
+                unknown.append(dialog)
+            else:
+                found[key] = result
             # Пауза между запросами: пачка подряд — прямая дорога к
             # FloodWait, а проверка не настолько срочная.
             await asyncio.sleep(config.VIDEO_CHECK_DELAY)
-        # Без пометки остались каналы, до которых очередь не дошла. Им
-        # пометку не ставим: «нет видео» — это был бы не вывод, а отговорка.
-        done = {getattr(d, 'id', None) for d in pending[:checked]}
+        # Без пометки остались каналы, до которых очередь не дошла, и те,
+        # что проверить не вышло. Им пометку не ставим: «нет видео» — это
+        # был бы не вывод, а отговорка.
+        unknown_ids = {getattr(d, 'id', None) for d in unknown}
+        done = {getattr(d, 'id', None) for d in pending[:checked]} - unknown_ids
         self._channel_unchecked = [
             d for d in pending if getattr(d, 'id', None) not in done]
         print(f"[Пометки] Без видео в последнем сообщении: {len(pending)}, "
-              f"по истории прочитано: {checked}, "
+              f"проверено: {checked}, не вышло: {len(unknown)}, "
               f"осталось на потом: {len(self._channel_unchecked)}")
-        if not found:
-            return
-        self._store_marks(found)
+        # Даже если ни одна проверка не удалась, пометки не теряются, а
+        # второй заход получит эти каналы через _store_marks.
+        self._store_marks(found, done)
 
-    def _store_marks(self, found):
+    def _load_channel_marks(self):
+        """Читает channel_videos.json: какие каналы уже проверены."""
+        path = os.path.join(paths.app_dir(), CHANNEL_MARKS_FILE)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        channels = data.get('channels')
+        if not isinstance(channels, dict):
+            return
+        for key, value in channels.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                peer_id = int(key)
+                has = value.get('has')
+                ts = float(value.get('ts') or 0)
+                version = int(value.get('v') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(has, bool):
+                continue
+            # «Нет видео» от старого способа проверки могло быть ложным:
+            # такой канал не скрываем, а отдаём на перепроверку.
+            if has is False and version < CHANNEL_MARK_VERSION:
+                continue
+            self._dialog_has_video[peer_id] = has
+            self._channel_marks_ts[peer_id] = ts
+
+    def _save_channel_marks(self):
+        """Пишет проверенные каналы на диск, чтобы не сканировать снова."""
+        path = os.path.join(paths.app_dir(), CHANNEL_MARKS_FILE)
+        data = {'channels': {}}
+        for peer_id, has in self._dialog_has_video.items():
+            data['channels'][str(peer_id)] = {
+                'has': bool(has),
+                'ts': self._channel_marks_ts.get(peer_id, 0),
+                'v': CHANNEL_MARK_VERSION,
+            }
+        tmp = path + '.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
+            os.replace(tmp, path)
+        except Exception as ex:
+            print(f"[Пометки] Не сохранились: {ex}")
+
+    def _store_marks(self, found, scanned=None):
         """Кладёт пометки в кеш и сообщает окну.
 
         Пометки только дополняются: канал, где видео находили раньше,
         остаётся «с видео», даже если последнее сообщение — картинка.
         «Нет видео» ставится лишь тем, чью историю действительно читали.
         """
+        now = time.time()
+        scanned = set(scanned or ())
+        changed = False
         for peer_id, has in found.items():
+            old = self._dialog_has_video.get(peer_id)
             if has:
-                self._dialog_has_video[peer_id] = True
+                if old is not True:
+                    self._dialog_has_video[peer_id] = True
+                    self._channel_marks_ts[peer_id] = now
+                    changed = True
+                elif peer_id in scanned:
+                    self._channel_marks_ts[peer_id] = now
+                    changed = True
             else:
-                self._dialog_has_video.setdefault(peer_id, False)
+                if old is None:
+                    self._dialog_has_video[peer_id] = False
+                    self._channel_marks_ts[peer_id] = now
+                    changed = True
+                elif old is False and peer_id in scanned:
+                    self._channel_marks_ts[peer_id] = now
+                    changed = True
+                elif old is True and peer_id in scanned:
+                    # Проверили заново и видео не нашли, но раньше оно
+                    # было: не понижаем пометку, только продлеваем срок.
+                    self._channel_marks_ts[peer_id] = now
+                    changed = True
+        if changed:
+            self._save_channel_marks()
         print(f"[Пометки] Проверено каналов: {len(found)}, "
               f"без видео: {sum(1 for v in found.values() if not v)}")
         self.channels_checked.emit(found)
@@ -2087,38 +2195,33 @@ class TelegramBackend(QObject):
                 print(f"[Пометки] Второй заход не назначен: {ex}")
 
     async def _has_video_further(self, dialog):
-        """Ищет ролик в истории ниже прочитанного куска.
+        """Спрашивает у Telegram, есть ли в канале хоть один ролик.
 
-        Последнее сообщение канала — почти всегда картинка или пост без
-        медиа: видео в канале идёт раз в десять сообщений. Поэтому
-        проверять одно последнее сообщение бессмысленно — «нет видео»
-        получал бы каждый второй канал с роликами.
+        Перебор последних сообщений давал ложные «нет видео»: ролик в
+        канале идёт раз в десяток постов и мог не попасть в прочитанный
+        кусок. Здесь фильтр по видео делает сервер — он видит всю
+        историю канала и отвечает на нужный вопрос одним запросом.
 
-        Читается один кусок истории от последнего сообщения; найден ли в
-        нём ролик — решает уже разбор на этой стороне. Отдельный поиск по
-        фильтру `InputMessagesFilterVideo` не подходит: он в Telethon
-        идёт своим запросом с другим разбором результата, а история от
-        известной точки — ровно тот запрос, который уже работает в
-        загрузке канала.
+        Возвращает True/False, а None — «проверить не удалось». Ошибку
+        нельзя превращать в «нет видео»: такой канал исчез бы из списка
+        насовсем, хотя ролики в нём есть.
         """
         entity = getattr(dialog, 'entity', None)
         peer_id = self._dialog_peer_id(dialog)
         if entity is None or peer_id is None:
-            return False
-        last = getattr(dialog, 'message', None)
-        offset_id = getattr(last, 'id', 0) if last else 0
+            return None
         try:
             async for message in self.client.iter_messages(
-                    entity, limit=config.CHANNEL_SCAN_MESSAGES, offset_id=offset_id):
+                    entity, limit=10,
+                    filter=telethon_boot.InputMessagesFilterVideo()):
+                # Проверяем и на этой стороне: фильтр сервера надёжен, но
+                # «видео» здесь — ровно то, что попадает в список роликов.
                 if self._message_has_video(message):
                     return True
+            return False
         except Exception as ex:
             print(f"[Пометки] «{getattr(dialog, 'name', '')}»: {ex}")
-            return False
-        # По прочитанному куску роликов нет. Это всё ещё догадка: канал с
-        # редкими роликами может остаться в «нет видео», пока его не
-        # откроют. Открытие канала снимает пометку.
-        return False
+            return None
 
     def _note_channel_videos(self, dialog_id, messages):
         """Запоминает по загруженному списку, что канал с видео.
@@ -2132,6 +2235,8 @@ class TelegramBackend(QObject):
         has = any(self._message_has_video(m) for m in (messages or []))
         if has and self._dialog_has_video.get(peer_id) is not True:
             self._dialog_has_video[peer_id] = True
+            self._channel_marks_ts[peer_id] = time.time()
+            self._save_channel_marks()
             self.channels_checked.emit({peer_id: True})
 
     @staticmethod
@@ -2172,23 +2277,32 @@ class TelegramBackend(QObject):
 
             async def _fetch():
                 collected = []
+                seen = 0
+                oldest = None
+                # Читаем на одно сообщение больше страницы: так видно,
+                # есть ли вообще история ниже, не делая отдельный запрос.
                 async for message in self.client.iter_messages(
-                        entity, limit=config.VIDEO_PAGE):
+                        entity, limit=config.VIDEO_PAGE + 1):
+                    seen += 1
+                    oldest = (message.id if oldest is None
+                              else min(oldest, message.id))
                     if self._video_info(message):
                         collected.append(message)
-                return collected
+                return collected, seen, oldest
 
-            messages = await self._request_with_reconnect(
+            messages, seen, oldest = await self._request_with_reconnect(
                 _fetch, 'Загрузка списка видео')
 
             messages.reverse()
+            if oldest is not None:
+                self._video_offset[dialog_id] = oldest
 
             video_titles = [self._index_video(m) or '' for m in messages]
 
-            # В канале есть ролики — значит, догружать есть что: прочитан
-            # только последний кусок истории. Если роликов нет вовсе,
-            # догрузка ничего не даст, и кнопку не показываем.
-            self._video_more[dialog_id] = bool(messages)
+            # Кнопка догрузки нужна только если в истории есть сообщения
+            # ниже прочитанной страницы. bool(messages) здесь врал:
+            # канал ровно на 200 сообщений навсегда получал «догрузить».
+            self._video_more[dialog_id] = seen > config.VIDEO_PAGE
             self._videos_by_dialog[dialog_id] = (messages, video_titles)
             # current_messages — общее состояние, из него играет плеер.
             # Присваиваем только активному каналу: при быстром переключении
@@ -2244,12 +2358,10 @@ class TelegramBackend(QObject):
         if cached is None:
             return
         old_messages, old_titles = cached[0], cached[1]
-        if not old_messages:
-            # Границы для чтения нет: в канале не нашлось ни одного ролика,
-            # и offset_id ушёл бы пустым. Telethon на таком offset_id падает
-            # внутри сравнения с None, а переподключение после этого
-            # выглядит как обрыв связи. Догружать тут нечего: если роликов
-            # нет в последних сообщениях, ниже их тоже нет.
+        offset_id = self._video_offset.get(dialog_id)
+        if offset_id is None and old_messages:
+            offset_id = min(m.id for m in old_messages)
+        if offset_id is None:
             self._video_more[dialog_id] = False
             self.status_changed.emit("Больше роликов нет")
             return
@@ -2257,20 +2369,28 @@ class TelegramBackend(QObject):
         try:
             # offset_id — исключающая граница: Telegram вернёт сообщения
             # строго старше него.
-            offset_id = min(m.id for m in old_messages)
+            offset_id = self._video_offset.get(dialog_id, offset_id)
             entity = getattr(dialog, "entity", None) or dialog_id
             self.status_changed.emit("Догрузка видео...")
 
             async def _fetch():
                 collected = []
+                seen = 0
+                oldest = None
                 async for message in self.client.iter_messages(
-                        entity, limit=config.VIDEO_PAGE, offset_id=offset_id):
+                        entity, limit=config.VIDEO_PAGE + 1,
+                        offset_id=offset_id):
+                    seen += 1
+                    oldest = (message.id if oldest is None
+                              else min(oldest, message.id))
                     if self._video_info(message):
                         collected.append(message)
-                return collected
+                return collected, seen, oldest
 
-            fresh = await self._request_with_reconnect(
+            fresh, seen, oldest = await self._request_with_reconnect(
                 _fetch, 'Догрузка списка видео')
+            if oldest is not None:
+                self._video_offset[dialog_id] = oldest
             # Дубли отсекаем по id: если канал перечитали между запросами,
             # ролик стоял бы в списке дважды.
             known = {m.id for m in old_messages}
@@ -2285,10 +2405,10 @@ class TelegramBackend(QObject):
             messages = fresh + list(old_messages)
             titles = [self._index_video(m) or '' for m in fresh]
             titles += list(old_titles)
-            # Читали с определённой границы, а новых роликов не пришло:
-            # значит, ниже этой границы в канале их больше нет. Кнопку
-            # догрузки гасим — иначе она обещала бы то, чего не выполнит.
-            self._video_more[dialog_id] = bool(fresh)
+            # Кнопка остаётся, только если ниже прочитанного реально
+            # есть ещё сообщения. Наличие роликов в текущей странице
+            # ничего не говорит о том, что история не кончилась.
+            self._video_more[dialog_id] = seen > config.VIDEO_PAGE
             # Кеш канала кладём ПОСЛЕ догруженного списка: иначе при
             # возврате в канал догрузка пропадала бы.
             self._videos_by_dialog[dialog_id] = (messages, titles)
@@ -2299,6 +2419,8 @@ class TelegramBackend(QObject):
                   f"всего {len(messages)}")
             if fresh:
                 self.status_changed.emit(f"Догружено: {len(fresh)}")
+            elif seen > config.VIDEO_PAGE:
+                self.status_changed.emit("Пока без новых роликов")
             else:
                 self.status_changed.emit("Больше роликов нет")
         except Exception as e:

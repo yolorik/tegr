@@ -187,6 +187,12 @@ class PlayerWindow(QMainWindow):
         self._osd_timer = QTimer(self)
         self._osd_timer.setSingleShot(True)
         self._osd_timer.timeout.connect(self._hide_window_osd)
+        # Окно подсказки создаём заранее: иначе первая подсказка
+        # появлялась с задержкой на создание окна.
+        try:
+            self._ensure_osd_window()
+        except Exception:
+            pass
         self.video_out = None
         self.media = None
         self._one_window_fs = False
@@ -403,6 +409,14 @@ class PlayerWindow(QMainWindow):
         self.bar_timer = QTimer(self)
         self.bar_timer.setSingleShot(True)
         self.bar_timer.timeout.connect(self.hide_bar_idle)
+        # Уход курсора с окна прячет панель не мгновенно: при переходе
+        # на саму панель Qt успевает прислать Leave раньше, чем станет
+        # известно, что курсор уже над ней. Короткая задержка даёт
+        # проверить положение ещё раз и не гасить панель из-под мыши.
+        self._bar_leave_timer = QTimer(self)
+        self._bar_leave_timer.setSingleShot(True)
+        self._bar_leave_timer.setInterval(180)
+        self._bar_leave_timer.timeout.connect(self._hide_bar_after_leave)
 
         # Где стоит курсор в фуллскрине — без ожидания событий Qt.
         # От этого зависит, появится ли панель ДО первого нажатия: см.
@@ -1517,7 +1531,7 @@ class PlayerWindow(QMainWindow):
         text = f"{arrow} {utils.format_time(pos * 1000)}"
         if duration > 0:
             text += f" / {utils.format_time(duration * 1000)}"
-        self.show_osd(text, 1500)
+        self.show_osd(text, 2500)
 
     def toggle_mute(self):
         try:
@@ -1558,7 +1572,7 @@ class PlayerWindow(QMainWindow):
         # бросает исключение — подставляем default, как обещает сигнатура.
         return default if value is None else value
 
-    def show_osd(self, text, timeout_ms=1200):
+    def show_osd(self, text, timeout_ms=1000):
         """Показывает текст поверх видео.
 
         Когда кадр рисует mpv — надписи рисует его OSD (уровень 1
@@ -1568,7 +1582,7 @@ class PlayerWindow(QMainWindow):
         """
         self._show_window_osd(text, timeout_ms)
 
-    def _show_window_osd(self, text, timeout_ms=1200):
+    def _show_window_osd(self, text, timeout_ms=1000):
         """Подсказка поверх кадра — прозрачным окном, над панелью.
 
         Почему окном, а не надписью в окне плеера: кадр в полном экране
@@ -1584,10 +1598,19 @@ class PlayerWindow(QMainWindow):
             self._osd_label.setText(text)
             self._osd_label.adjustSize()
             win.adjustSize()
+            # Панель — якорь подсказки. В полном экране она может быть
+            # спрятана: показываем её, чтобы подсказка встала строго над
+            # ней. В оконном режиме панель и так на месте.
+            try:
+                self.poke_bar()
+            except Exception:
+                pass
             self._place_window_osd(size=win.size())
             win.show()
             self._raise_osd_over_owner(win)
-            self._osd_timer.start(max(300, int(timeout_ms)))
+            # Подсказки живут ровно секунду — независимо от того, что
+            # передал вызывающий код.
+            self._osd_timer.start(min(1000, max(300, int(timeout_ms))))
         except Exception as ex:
             print(f"[OSD] не показалось: {ex}")
 
@@ -1613,9 +1636,22 @@ class PlayerWindow(QMainWindow):
                 # окнами, ради чего и убирался «поверх всех окон».
                 win.hide()
                 return
-            ctypes.windll.user32.SetWindowPos(
-                hwnd, int(owner.winId()), 0, 0, 0, 0,
+            # ВАЖНО: SetWindowPos(hwnd, owner, ...) ставит подсказку ЗА
+            # окном-владельцем, то есть под ним — так она и пропадала.
+            # Сначала делаем окно дочерним по владению, затем поднимаем
+            # его наверх (HWND_TOP = 0): над плеером и его панелью, но
+            # без флага «поверх всех окон».
+            GWLP_HWNDPARENT = -8
+            user32 = ctypes.windll.user32
+            try:
+                set_owner = user32.SetWindowLongPtrW
+            except AttributeError:
+                set_owner = user32.SetWindowLongW
+            set_owner(hwnd, GWLP_HWNDPARENT, int(owner.winId()))
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
                 0x0001 | 0x0002 | 0x0010)
+            win.raise_()
         except Exception:
             try:
                 win.raise_()
@@ -1653,12 +1689,15 @@ class PlayerWindow(QMainWindow):
         self._osd_window = win
         self._osd_label = label
 
-    def _place_window_osd(self, size=None):
-        """Ставит подсказку по центру — над панелью или под ней.
+    OSD_BAR_GAP = 8
 
-        По умолчанию над панелью: она ходит по вертикали, и подсказка в
-        самом низу могла бы не поместиться. «Под панелью» — у самого
-        низа экрана, это настройка.
+    def _place_window_osd(self, size=None):
+        """Ставит подсказку строго над панелью управления.
+
+        Панель — единственный якорь, в оконном плеере и в полном экране
+        одинаково: подсказка центрируется по ней, а её нижний край
+        отстоит от верхнего края панели на фиксированный зазор. Поэтому
+        она не может оказаться ни под панелью, ни поверх неё.
         """
         win = self._osd_window
         if win is None:
@@ -1666,27 +1705,28 @@ class PlayerWindow(QMainWindow):
         size = size or win.size()
         try:
             host = self.container
-            rect = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
+            area = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
         except Exception:
-            rect = self.screen().geometry()
-        x = rect.x() + (rect.width() - size.width()) // 2
-        if self._osd_below_bar():
-            y = rect.y() + rect.height() - size.height() - 8
-        else:
-            top = rect.y() + rect.height() - size.height() - 24
-            if self.bar.isVisible() and self._bar_in_window:
-                bar_top = self.bar.mapToGlobal(QPoint(0, 0)).y()
-                if top + size.height() > bar_top - 6:
-                    top = bar_top - size.height() - 8
-            y = max(rect.y() + 8, top)
-        win.move(x, y)
+            area = self.screen().geometry()
 
-    def _osd_below_bar(self):
-        """Включена ли настройка «подсказки под панелью управления»."""
-        try:
-            return bool(self._setting('osd_below_bar', False))
-        except Exception:
-            return False
+        if self.bar.isVisible():
+            bar = QRect(self.bar.mapToGlobal(QPoint(0, 0)),
+                        self.bar.size())
+            x = bar.x() + (bar.width() - size.width()) // 2
+            y = bar.top() - size.height() - self.OSD_BAR_GAP
+            # По горизонтали не выходим за окно плеера.
+            x = max(area.left() + 8,
+                    min(x, area.right() - size.width() - 8))
+        else:
+            # Панели сейчас нет (например, она ещё не показана) —
+            # держим подсказку там, где она будет над панелью.
+            x = area.x() + (area.width() - size.width()) // 2
+            y = area.bottom() - size.height() - 24
+
+        # Верхняя граница окна плеера: даже длинная подсказка не уедет
+        # за пределы кадра.
+        y = max(area.top() + 8, y)
+        win.move(x, y)
 
     def _hide_window_osd(self):
         if self._osd_window is not None:
@@ -2134,7 +2174,7 @@ class PlayerWindow(QMainWindow):
             self.player.seek(max(0, ms) / 1000.0, reference='absolute')
         except Exception:
             pass
-        self.show_osd(utils.format_time(ms), 800)
+        self.show_osd(utils.format_time(ms), 2000)
 
     def _show_pip_bar(self):
         """Показывает панель в PiP и ставит таймер на автоскрытие.
@@ -2437,6 +2477,10 @@ class PlayerWindow(QMainWindow):
         """
         if not self.isVisible():
             return
+        try:
+            self._bar_leave_timer.stop()
+        except Exception:
+            pass
         if self._bar_in_window and not self._one_window_fs:
             return
         if not self._is_fullscreen_view():
@@ -2470,10 +2514,15 @@ class PlayerWindow(QMainWindow):
         (cache-pause), при перемотке, при старте ролика. Тогда панель
         оставалась спрятанной, и видео «висело на паузе» без кнопок.
         """
-        if paused and not self._closed and self._is_fullscreen_view():
-            self.bar_timer.stop()
-            if not self.bar.isVisible():
-                self.poke_bar()
+        if not self._closed and self._is_fullscreen_view():
+            if paused:
+                self.bar_timer.stop()
+                if not self.bar.isVisible():
+                    self.poke_bar()
+            elif self.bar.isVisible():
+                # После паузы таймер был остановлен; без перезапуска
+                # панель висела до первого движения мыши.
+                self.bar_timer.start(config.BAR_HIDE_MS)
 
     def _mouse_over_tick(self):
         """Опрос MouseWatch: курсор над окном фуллскрина.
@@ -2493,6 +2542,10 @@ class PlayerWindow(QMainWindow):
         """
         if not self._is_fullscreen_view():
             return
+        try:
+            self._bar_leave_timer.stop()
+        except Exception:
+            pass
         pos = _cursor_pos_win32()
         if pos is None:
             return
@@ -2537,6 +2590,12 @@ class PlayerWindow(QMainWindow):
         self._last_mouse_pos = pos
         if not self._is_fullscreen_view():
             return
+        try:
+            self._bar_leave_timer.stop()
+        except Exception:
+            pass
+        if self._cursor_over_bar():
+            return
         if not self.player.pause:
             self.poke_bar()
 
@@ -2566,6 +2625,12 @@ class PlayerWindow(QMainWindow):
         if pos == self._last_mouse_pos:
             return
         self._last_mouse_pos = pos
+        try:
+            self._bar_leave_timer.stop()
+        except Exception:
+            pass
+        if self._cursor_over_bar():
+            return
         self.poke_bar()
 
     def changeEvent(self, event):
@@ -2655,6 +2720,10 @@ class PlayerWindow(QMainWindow):
         """
         if not self._is_fullscreen_view():
             return
+        try:
+            self._bar_leave_timer.stop()
+        except Exception:
+            pass
         if self.bar.isVisible():
             return
         if self.player.pause:
@@ -2669,32 +2738,67 @@ class PlayerWindow(QMainWindow):
         """
         if not self._is_fullscreen_view():
             return
+        # Leave приходит и когда курсор уходит из окна плеера на панель
+        # управления: она висит отдельным окном поверх кадра. Если
+        # спрятать её в этот момент, панель исчезает прямо из-под
+        # курсора. Поэтому сначала проверяем, где курсор на самом деле.
+        if self._cursor_over_bar():
+            return
+        # Часто Leave приходит за мгновение до того, как курсор окажется
+        # над панелью. Прячем не сразу, а с короткой проверкой.
+        self._bar_leave_timer.start()
+
+    def _hide_bar_after_leave(self):
+        if not self._is_fullscreen_view():
+            return
+        if self._cursor_over_bar():
+            return
+        # На паузе панель не прячем, пока плеер остаётся активным:
+        # Leave мог прийти от перехода курсора на саму панель или на её
+        # кнопку, а не от ухода в другое окно.
+        try:
+            if self.player.pause and self.isActiveWindow():
+                return
+        except Exception:
+            pass
         self.bar_timer.stop()
         if self.bar.isVisible():
             self.bar.hide()
         # Курсор не прячем: в полном экране он должен быть виден.
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
+    def _event_in_bar(self, obj):
+        """Событие пришло от панели управления или её потомка."""
+        try:
+            if obj is self.bar:
+                return True
+            return isinstance(obj, QWidget) and self.bar.isAncestorOf(obj)
+        except Exception:
+            return False
+
     def _cursor_over_bar(self):
         """Курсор сейчас над панелью управления.
 
-        Положение берём у Windows, а не у QCursor: внутренняя позиция
-        QCursor обновляется по событиям и может отставать от настоящей.
-        Мелочь, а без неё панель упрямо не пряталась, стоило курсору
-        хоть раз пройти над ней.
+        Сравниваем через QCursor, а не через Win32 GetCursorPos: Qt
+        отдаёт координаты в логических точках, а Win32 — в физических
+        пикселях. На масштабе Windows 125/150% эти пространства не
+        совпадают, и проверка «курсор над панелью» всегда промахивалась
+        — панель пряталась из-под курсора.
         """
         try:
             if not self.bar.isVisible():
                 return False
-            xy = _cursor_pos_win32()
-            if xy is None:
-                return False
-            where = QPoint(*xy)
-            # where — уже экранная точка: панель, даже в фуллскрине,
-            # живёт в экранных же координатах, поэтому сравниваем с её
-            # прямоугольником на экране.
-            return QRect(self.bar.mapToGlobal(QPoint(0, 0)),
-                         self.bar.size()).contains(where)
+            if self.bar.rect().contains(
+                    self.bar.mapFromGlobal(QCursor.pos())):
+                return True
+            # На 100% масштабе Windows GetCursorPos и Qt дают одни и те
+            # же координаты — это запасная, более свежая проверка.
+            if abs(self.bar.devicePixelRatioF() - 1.0) < 0.01:
+                xy = _cursor_pos_win32()
+                if xy is not None:
+                    return self.bar.rect().contains(
+                        self.bar.mapFromGlobal(QPoint(*xy)))
+            return False
         except Exception:
             return False
 
@@ -2852,7 +2956,11 @@ class PlayerWindow(QMainWindow):
 
         # Наведение на кадр — тоже повод показать панель: в фуллскрине
         # кадр приходит часто именно наведением, а не MouseMove.
-        if t == QEvent.Type.HoverMove:
+        # Наведение на саму панель пропускаем: она отдельное окно поверх
+        # кадра, и каждое движение по ней вызывало poke_bar() с raise_()
+        # — панель начинала моргать.
+        if (t == QEvent.Type.HoverMove
+                and not self._event_in_bar(obj)):
             self._hover_moved()
 
         if t == QEvent.Type.MouseMove:
@@ -2895,7 +3003,7 @@ class PlayerWindow(QMainWindow):
             # самой панелью не продлевают ей жизнь — иначе она не уйдёт,
             # пока по ней водят курсором.
             if (self._is_fullscreen_view()
-                    and not (obj is self.bar or obj.parent() is self.bar)):
+                    and not self._event_in_bar(obj)):
                 self._mouse_moved(event)
             # В PiP панель тоже появляется от движения мыши и уходит сама.
             if self.pip_window.isVisible():
@@ -3327,6 +3435,14 @@ class PlayerWindow(QMainWindow):
         # висеть на экране после закрытия плеера.
         try:
             self.pip_window.hide()
+        except Exception:
+            pass
+        # Подсказка — тоже отдельное окно: гасим её и таймер, иначе она
+        # могла пережить плеер и не дать приложению закрыться.
+        try:
+            self._osd_timer.stop()
+            if self._osd_window is not None:
+                self._osd_window.hide()
         except Exception:
             pass
         try:

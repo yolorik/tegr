@@ -1,113 +1,96 @@
-﻿$ErrorActionPreference = 'Continue'
-# Сборка .exe плеера.
-#
-# $root считается от расположения ЭТОГО скрипта, а не задаётся путём.
-# Раньше здесь стоял жёсткий «C:\tgplayer», и после переноса проекта в
-# другую папку сборка искала исходники там, где их уже нет. Все пути ниже
-# строятся от $root через Join-Path — тогда проект можно переносить куда
-# угодно, и сборка продолжит работать.
+$ErrorActionPreference = 'Stop'
+
+# Build Tegr.exe from this directory.
+# Name and version come from tgplayer/core/version.py.
 
 $root = $PSScriptRoot
-# Имя приложения берётся из version.py, а не задаётся здесь второй раз:
-# при переименовании одно из двух мест обязательно отставало бы, и .exe
-# назывался бы старым именем.
-$nm = (& 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe' -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.APP_NAME)" | Select-Object -First 1).Trim()
-if (-not $nm) { Write-Output 'не удалось прочитать имя программы'; exit 1 }
-$mod = 'player_deepseek'
-$dst = Join-Path $root "dist\$nm"
-$bak = Join-Path $root '_build_data'
-$build = Join-Path $root 'build'
-$data = @('my_player_session.session', 'proxy.txt', 'history.json', 'settings.json')
+$py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
 
-$p = Get-Process -Name $nm -ErrorAction SilentlyContinue
-if ($p) { Write-Output 'ВНИМАНИЕ: плеер запущен, закройте его'; exit 1 }
-# Старое имя тоже проверяем: пока плеер запущен под ним, файлы сессии
-# заняты, и сборка получится с данными, снятыми наполовину.
-$pOld = Get-Process -Name 'TGPlayer' -ErrorAction SilentlyContinue
-if ($pOld) { Write-Output 'ВНИМАНИЕ: запущен TGPlayer, закройте его'; exit 1 }
-Write-Output 'плеер не запущен'
-Write-Output "папка проекта: $root"
-Write-Output "имя приложения: $nm"
+$meta = & $py -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.APP_NAME); print(v.VERSION)"
+if (-not $meta -or $meta.Count -lt 2) {
+    Write-Output 'Cannot read app name/version'
+    exit 1
+}
+$nm = $meta[0].Trim()
+$ver = $meta[1].Trim()
+Write-Output "App: $nm $ver"
+Write-Output "Root: $root"
 
-New-Item -ItemType Directory -Force -Path $bak | Out-Null
-foreach ($f in $data) {
-    $src = Join-Path $dst $f
-    if (Get-Item $src -ErrorAction SilentlyContinue) {
-        Copy-Item $src (Join-Path $bak $f) -Force
-    }
+$running = Get-Process -Name $nm -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Output "Close $nm before building."
+    exit 1
 }
 
-$entry = Join-Path $root "$mod.py"
-$entryBuild = Join-Path $root "${mod}_build.py"
-Copy-Item $entry $entryBuild -Force
+$dist = Join-Path $root 'dist'
+$dst = Join-Path $dist $nm
+$build = Join-Path $root 'build'
+$entry = Join-Path $root 'player_tegr.py'
+$icon = Join-Path $root 'tgplayer.ico'
+$mpvDll = Join-Path $root 'libmpv-2.dll'
+$vulkanDll = Join-Path $root 'vulkan-1.dll'
 
-# --- версия: берём из единственного источника, tgplayer/core/version.py ---
-$py = 'C:\Users\yolorik\AppData\Local\Programs\Python\Python311\python.exe'
-$verLine = & $py -c "import sys; sys.path.insert(0, r'$root'); from tgplayer.core import version as v; print(v.VERSION); print(v.LOADER_TITLES.get(v.LOADER, ''))"
-$ver = $verLine[0].Trim()
-$verNote = ($verLine | Select-Object -Skip 1) -join ' '.Trim()
-$nums = ($ver -replace '[^0-9.]', '').Split('.')
-while ($nums.Count -lt 3) { $nums += '0' }
-$vtuple = "$($nums[0]), $($nums[1]), $($nums[2]), 0"
-Write-Output "версия сборки: $ver"
+if (-not (Test-Path $entry)) { Write-Output "Missing $entry"; exit 1 }
+if (-not (Test-Path $mpvDll)) { Write-Output "Missing $mpvDll"; exit 1 }
+if (-not (Test-Path $vulkanDll)) { Write-Output "Missing $vulkanDll"; exit 1 }
 
-$viPath = Join-Path $root 'version_info.txt'
-$viOut = Join-Path $root 'version_info_gen.txt'
-$vi = Get-Content $viPath -Raw -Encoding UTF8
+# Windows file properties: version, product name, description.
+New-Item -ItemType Directory -Force -Path $build | Out-Null
+$viSrc = Join-Path $root 'version_info.txt'
+$viOut = Join-Path $build 'version_info_gen.txt'
+$vi = Get-Content $viSrc -Raw -Encoding UTF8
+$parts = ($ver -replace '[^0-9.]', '').Split('.')
+while ($parts.Count -lt 3) { $parts += '0' }
+$vtuple = "$($parts[0]), $($parts[1]), $($parts[2]), 0"
 $vi = $vi -replace 'filevers=\([^)]*\)', "filevers=($vtuple)"
 $vi = $vi -replace 'prodvers=\([^)]*\)', "prodvers=($vtuple)"
 $vi = $vi -replace "(?<=StringStruct\(u'FileVersion', u')[^']*", $ver
 $vi = $vi -replace "(?<=StringStruct\(u'ProductVersion', u')[^']*", $ver
-# Имя программы подставляем в свойства файла тоже: иначе в проводнике у
-# Tegr.exe осталось бы ProductName от прежнего названия.
 $vi = $vi -replace "(?<=StringStruct\(u'ProductName', u')[^']*", $nm
 $vi = $vi -replace "(?<=StringStruct\(u'CompanyName', u')[^']*", $nm
 $vi = $vi -replace "(?<=StringStruct\(u'InternalName', u')[^']*", $nm
 $vi = $vi -replace "(?<=StringStruct\(u'OriginalFilename', u')[^']*", "$nm.exe"
-if ($verNote) {
-    $vi = $vi -replace "(?<=StringStruct\(u'Comments', u')[^']*", $verNote
-}
-# Пишем в UTF-8 без BOM: PyInstaller читает файл как обычный текст, и BOM
-# в начале ломает разбор первой строки (VSVersionInfo не распознаётся).
 [System.IO.File]::WriteAllText($viOut, $vi,
     (New-Object System.Text.UTF8Encoding $false))
-
-$icon = Join-Path $root 'tgplayer.ico'
-$mpvDll = Join-Path $root 'libmpv-2.dll'
-$vulkanDll = Join-Path $root 'vulkan-1.dll'
 
 & $py -m PyInstaller --noconfirm --clean --windowed --name $nm `
     --icon $icon `
     --version-file $viOut `
     --add-binary "$mpvDll;." `
     --add-binary "$vulkanDll;." `
-    --hidden-import mpv --hidden-import cryptg `
-    --hidden-import python_socks --collect-submodules python_socks --hidden-import socks `
+    --hidden-import mpv `
+    --hidden-import cryptg `
+    --hidden-import python_socks --collect-submodules python_socks `
+    --hidden-import socks `
     --hidden-import segno --collect-submodules segno `
-    --collect-submodules telethon --log-level WARN `
-    --distpath (Join-Path $root 'dist') --workpath $build --specpath $build `
-    $entryBuild 2>&1 | Select-Object -Last 1
-Write-Output "build exit=$LASTEXITCODE"
+    --hidden-import PyQt6.QtMultimedia `
+    --hidden-import PyQt6.QtMultimediaWidgets `
+    --collect-submodules telethon `
+    --collect-submodules tgplayer `
+    --log-level WARN `
+    --distpath $dist --workpath $build --specpath $build `
+    $entry
+$code = $LASTEXITCODE
+Write-Output "PyInstaller exit=$code"
+if ($code -ne 0) { exit $code }
 
-foreach ($f in $data) {
-    $src = Join-Path $bak $f
-    if (Get-Item $src -ErrorAction SilentlyContinue) {
-        Copy-Item $src (Join-Path $dst $f) -Force
-    }
-}
-Copy-Item $icon (Join-Path $dst 'tgplayer.ico') -Force
-
-# Картинки значка: самолётик для окна входа и версия с ключевым цветом
-# для трея. Лежат рядом с .exe — оттуда их и находит paths.
-$assets = @('tgplayer_plane.png', 'tgplayer_plane_key.png')
+# Resources the program looks for next to the executable.
+$assets = @('tgplayer.ico', 'tgplayer_plane.png',
+            'tgplayer_plane_key.png', 'proxy.txt')
 foreach ($a in $assets) {
     $src = Join-Path $root $a
-    if (Test-Path $src) { Copy-Item $src (Join-Path $dst $a) -Force }
+    if (Test-Path $src) {
+        Copy-Item $src (Join-Path $dst $a) -Force
+    }
 }
 
 $exe = Join-Path $dst ($nm + '.exe')
+if (-not (Test-Path $exe)) {
+    Write-Output "Build failed: $exe not found"
+    exit 1
+}
 Get-Item $exe | Select-Object Name, Length, LastWriteTime
-Write-Output '--- библиотеки в поставке ---'
+Write-Output '--- bundled libraries ---'
 Get-ChildItem (Join-Path $dst '_internal') -Filter '*.dll' |
     Where-Object { $_.Name -in @('libmpv-2.dll', 'vulkan-1.dll') } |
     Select-Object Name, Length

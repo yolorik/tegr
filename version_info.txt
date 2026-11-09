@@ -1,12 +1,10 @@
-# Свойства файла для Windows: «Подробно» в свойствах .exe покажет версию.
-#
-# Значения подставляет _build.ps1 из tgplayer/core/version.py — руками
-# здесь ничего менять не нужно. Если править, то только сам шаблон.
+# Свойства файла Windows. _build.ps1 подставляет имя и версию из
+# tgplayer/core/version.py, руками здесь менять не нужно.
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 4, 0, 0),
-    prodvers=(2, 4, 0, 0),
+    filevers=(4, 0, 0, 0),
+    prodvers=(4, 0, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -21,13 +19,13 @@ VSVersionInfo(
           u'041904E3',
           [StringStruct(u'CompanyName', u'Tegr'),
            StringStruct(u'FileDescription', u'Tegr — видеоплеер для Telegram'),
-           StringStruct(u'FileVersion', u'2.5.0d'),
+           StringStruct(u'FileVersion', u'4.0.0'),
            StringStruct(u'InternalName', u'Tegr'),
            StringStruct(u'LegalCopyright', u''),
            StringStruct(u'OriginalFilename', u'Tegr.exe'),
            StringStruct(u'ProductName', u'Tegr'),
-           StringStruct(u'ProductVersion', u'2.5.0d'),
-           StringStruct(u'Comments', u'схема загрузчика: d')])
+           StringStruct(u'ProductVersion', u'4.0.0'),
+           StringStruct(u'Comments', u'')])
       ]
     ),
     VarFileInfo([VarStruct(u'Translation', [1049, 1251])])

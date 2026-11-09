@@ -25,10 +25,11 @@
 снова станет непонятно, что внутри.
 """
 
-MAJOR = 3
-MINOR = 6
-PATCH = 2
-LOADER = 'd'
+MAJOR = 4
+MINOR = 0
+PATCH = 0
+# Пустая строка — обычный выпуск без буквы схемы загрузчика.
+LOADER = ''
 
 # Пометка сборки. Ставится, пока версия проверочная и в общий
 # канал её выкладывать рано: «(beta)» видно и в заголовке окна, и в
@@ -68,6 +69,8 @@ def version_text():
 
 def full_version_text():
     """Строка для журнала: версия и расшифровка схемы загрузчика."""
+    if not LOADER:
+        return DISPLAY_VERSION
     loader = LOADER_TITLES.get(LOADER, 'неизвестная')
     return f"{DISPLAY_VERSION} (загрузчик {LOADER}: {loader})"
 
@@ -83,13 +86,17 @@ def about_text():
     Собирается из отдельных строк, чтобы в окне настроек он выглядел как
     обычный блок сведений, а не как одна длинная строка.
     """
-    return (
+    lines = [
         f"{APP_NAME} {DISPLAY_VERSION}",
         f"Сборка {RELEASE_YEAR} года",
-        f"Схема загрузки: {LOADER}",
+    ]
+    if LOADER:
+        lines.append(f"Схема загрузки: {LOADER}")
+    lines.extend((
         "Сделано с помощью ИИ (DeepSeek 4.1 Flash).",
         "Telegram-клиент: Telethon. Видеодвижок: libmpv.",
-    )
+    ))
+    return tuple(lines)
 
 
 
