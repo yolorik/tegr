@@ -3728,7 +3728,13 @@ class TelegramBackend(QObject):
             parsed = parse_range_header(
                 request.headers.get('Range'), file_size)
             if parsed is None:
-                return web.Response(status=416)
+                # RFC 9110: у 416 должен быть Content-Range с полным
+                # размером файла, иначе клиент не знает, какой диапазон
+                # допустим.
+                return web.Response(status=416, headers={
+                    'Content-Range': f'bytes */{file_size}',
+                    'Accept-Ranges': 'bytes',
+                })
             start, end, status = parsed
 
             print(f"[HTTP] idx={msg_idx} запрос диапазона {start}-{end} ({status})")
