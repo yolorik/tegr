@@ -54,6 +54,25 @@ class _ErrorStream:
         pass
 
 
+class _Flood(Exception):
+    """Подделка FloodWaitError: воркер смотрит на тип и seconds."""
+
+    seconds = 0
+
+
+class _FloodStream:
+    """Поток, который просит подождать вместо выдачи данных."""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise _Flood()
+
+    async def aclose(self):
+        pass
+
+
 class _Client:
     def __init__(self, streams):
         self.streams = list(streams)
@@ -146,6 +165,49 @@ class CacheWorkerTests(unittest.IsolatedAsyncioTestCase):
         # Читателя для готового файла открывает сама финализация.
         self.assertIsNotNone(e['rfh'])
         e['rfh'].close()
+
+    async def test_floodwait_requeues_without_reconnect(self):
+        client = _Client([_FloodStream(), _Stream([self.payload])])
+        backend = self.make_backend(client)
+        e = make_entry(self.part)
+
+        reconnect_calls = []
+
+        async def reconnect(force=False):
+            reconnect_calls.append(force)
+            return True
+
+        backend.reconnect = reconnect
+        queue = e['queue']
+        queue.put_nowait((0, 0))
+
+        import tgplayer.backend.backend as backend_module
+        old_error = backend_module.telethon_boot.FloodWaitError
+        real_sleep = backend_module.asyncio.sleep
+
+        async def fast_sleep(_delay):
+            await real_sleep(0)
+
+        backend_module.telethon_boot.FloodWaitError = _Flood
+        backend_module.asyncio.sleep = fast_sleep
+        try:
+            task = asyncio.create_task(
+                backend._cache_worker(_Document(), e, queue, 0, 0.0))
+            await asyncio.wait_for(task, 5)
+        finally:
+            backend_module.telethon_boot.FloodWaitError = old_error
+            backend_module.asyncio.sleep = real_sleep
+
+        # FloodWait — не обрыв маршрута: переподключаться не надо, а кусок
+        # после ожидания возвращается в очередь и качается заново.
+        self.assertEqual(reconnect_calls, [])
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(e['piece_done'], {0})
+        self.assertTrue(e['complete'])
+        with open(e['path'], 'rb') as f:
+            self.assertEqual(f.read(), self.payload)
+        if e.get('rfh'):
+            e['rfh'].close()
 
     async def test_worker_retries_after_transient_error(self):
         client = _Client([_ErrorStream(), _Stream([self.payload])])
