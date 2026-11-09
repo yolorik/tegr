@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import secrets
 import socket
 import subprocess
 import time
@@ -173,6 +174,10 @@ class TelegramBackend(QObject):
         # Порт локального HTTP-сервера. Заполняется при старте: если 8081
         # занят чужой программой, берём свободный у системы.
         self.stream_port = config.STREAM_PORT
+        # Токен локального HTTP-сервера. Без него любой процесс на
+        # машине мог бы читать видео через 127.0.0.1. mpv получает
+        # токен вместе с адресом потока.
+        self.stream_token = secrets.token_urlsafe(24)
         # Закреплённые плейлисты плеера: токен -> список сообщений. Запросы
         # mpv идут с ?pl=<токен>, поэтому смена канала в главном окне больше
         # не подменяет файл под уже играющим роликом.
@@ -3777,6 +3782,14 @@ class TelegramBackend(QObject):
 
     async def handle_stream(self, request):
         try:
+            # Локальный порт доступен всем программам на машине.
+            # Токен отделяет запросы плеера от чужих. Пустое значение
+            # оставляем для тестов и совместимости со старыми
+            # экземплярами, у которых поле ещё не было создано.
+            expected = getattr(self, 'stream_token', '') or ''
+            if expected and not secrets.compare_digest(
+                    str(request.query.get('t') or ''), expected):
+                return web.Response(status=403)
             msg_idx = int(request.query.get('idx', -1))
             # Плейлист берём по токену окна плеера: смена канала в главном
             # окне не должна подменять файл под уже играющим роликом.

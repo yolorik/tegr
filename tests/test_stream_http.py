@@ -58,6 +58,7 @@ class StreamHttpTests(unittest.IsolatedAsyncioTestCase):
 
         backend = TelegramBackend.__new__(TelegramBackend)
         self.backend = backend
+        backend.stream_token = 'secret'
         backend.current_messages = [_Message()]
         backend._playlists = {}
         backend.cache = {1: self.entry}
@@ -87,10 +88,10 @@ class StreamHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def get(self, range_header):
         return await self.client.get(
-            '/stream?idx=0', headers={'Range': range_header})
+            '/stream?idx=0&t=secret', headers={'Range': range_header})
 
     async def test_full_file(self):
-        response = await self.client.get('/stream?idx=0')
+        response = await self.client.get('/stream?idx=0&t=secret')
         self.assertEqual(response.status, 200)
         self.assertEqual(await response.read(), bytes(range(100)))
         self.assertEqual(response.headers['Accept-Ranges'], 'bytes')
@@ -115,6 +116,14 @@ class StreamHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.headers['Content-Range'], 'bytes */100')
 
+    async def test_missing_token_forbidden(self):
+        response = await self.client.get('/stream?idx=0')
+        self.assertEqual(response.status, 403)
+
+    async def test_wrong_token_forbidden(self):
+        response = await self.client.get('/stream?idx=0&t=wrong')
+        self.assertEqual(response.status, 403)
+
     async def test_partial_file_waits_for_new_data(self):
         # Вторая половина файла ещё не скачана: читатель должен уснуть
         # на событии и проснуться, когда воркер запишет данные.
@@ -135,7 +144,7 @@ class StreamHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.backend.prioritize_position = prioritize
 
-        response = await self.client.get('/stream?idx=0')
+        response = await self.client.get('/stream?idx=0&t=secret')
         self.assertEqual(response.status, 200)
         self.assertEqual(await response.read(), bytes(range(100)))
 

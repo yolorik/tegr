@@ -1181,8 +1181,9 @@ class PlayerWindow(QMainWindow):
         self.backend.discard_other_downloads(keep)
 
         port = getattr(self.backend, 'stream_port', None) or config.STREAM_PORT
+        token = getattr(self.backend, 'stream_token', '') or ''
         url = (f"http://127.0.0.1:{port}/stream"
-               f"?idx={index}&pl={self._playlist_token or ''}")
+               f"?idx={index}&pl={self._playlist_token or ''}&t={token}")
 
         # Позиция, с которой надо начать. Приоритет у явной перемотки
         # (_pending_seek: смена декодера, автолечение), иначе —
