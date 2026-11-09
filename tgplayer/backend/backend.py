@@ -3544,6 +3544,14 @@ class TelegramBackend(QObject):
                     except asyncio.CancelledError:
                         raise
                     except Exception as ex:
+                        # Неудачный поток мог оставить соединение
+                        # открытым. Закрываем до переподключения, иначе
+                        # каждый повтор копит висящие соединения.
+                        try:
+                            if stream is not None:
+                                await stream.aclose()
+                        except Exception:
+                            pass
                         # FloodWait — это не обрыв связи. Переподключаться
                         # бессмысленно: Telegram всё равно велит ждать, а
                         # новый маршрут только добавляет шторм запросов.
