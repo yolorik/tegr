@@ -32,10 +32,9 @@ from . import version
 
 # Адрес репозитория. Меняется здесь и только здесь.
 #
-# Благодаря этой строке и текущему имени программы адрес совпадал с
-# репозиторием: yolorik/tgplayer. Переименовывать репозиторий не нужно —
-# имя репозитория и имя программы независимы.
-REPO = 'yolorik/tgplayer'
+# Репозиторий называется tegr; старое имя tgplayer осталось только в
+# истории и в имени файла старого установщика.
+REPO = 'yolorik/tegr'
 API_LATEST = f'https://api.github.com/repos/{REPO}/releases'
 RELEASES_PAGE = f'https://github.com/{REPO}/releases'
 

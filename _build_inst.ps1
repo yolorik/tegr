@@ -1,3 +1,4 @@
+param([string]$SrcDir = '')
 $ErrorActionPreference = 'Stop'
 
 # Build the Inno Setup installer from dist\<AppName>.
@@ -21,7 +22,11 @@ Write-Output "App:     $nm"
 Write-Output "Version: $ver"
 Write-Output "Output:  $dir"
 
-$src = Join-Path $root "dist\$nm"
+if ($SrcDir) {
+    $src = [System.IO.Path]::GetFullPath($SrcDir)
+} else {
+    $src = Join-Path $root "dist\$nm"
+}
 if (-not (Test-Path (Join-Path $src ($nm + '.exe')))) {
     Write-Output "Build dist first: $src"
     exit 1

@@ -35,10 +35,17 @@ Tegr не ждёт полной загрузки ролика: видео идё
 ## Запуск из исходников
 
 ```bash
+pip install -r requirements.txt
 python player_tegr.py
 ```
 
-Нужны Python 3.11, PyQt6, Telethon, aiohttp и `libmpv-2.dll` рядом с `player_tegr.py`.
+Нужны Python 3.11 и `libmpv-2.dll` рядом с `player_tegr.py`.
+
+## Тесты
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Технологии
 
@@ -46,7 +53,7 @@ Python, PyQt6, libmpv, Telethon, aiohttp.
 
 ## Сборка
 
-Нужны Python 3.11, PyInstaller и Inno Setup 6:
+Нужны Python 3.11, зависимости из `requirements-dev.txt`, PyInstaller и Inno Setup 6:
 
 - `_build.ps1` — сборка `Tegr.exe` в `dist\Tegr`;
 - `_build_inst.ps1` — сборка установщика в `releases\<версия>`.

@@ -1,0 +1,3 @@
+# Build and test tools. Install after requirements.txt.
+-r requirements.txt
+PyInstaller==6.17.0

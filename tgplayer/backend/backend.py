@@ -32,6 +32,7 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from ..core import config, history, log, paths, proxy, settings, utils
 from ..system import telethon_boot
 from ..widgets.widgets import DownloadTracker, _open_read, _piece_ranges
+from .http_range import parse_range_header
 
 CHANNEL_MARKS_FILE = 'channel_videos.json'
 # «Есть видео» можно не перепроверять месяц, «нет видео» — сутки:
@@ -3716,40 +3717,13 @@ class TelegramBackend(QObject):
             document = playlist[msg_idx].media.document
             file_size = document.size
 
-            range_header = request.headers.get('Range')
-            start, end, status = 0, file_size - 1, 200
-
-            if range_header:
-                try:
-                    spec = range_header.strip()
-                    if spec.lower().startswith('bytes='):
-                        spec = spec[6:]
-                    # Мультидиапазоны не поддерживаем — берём первый.
-                    spec = spec.split(',')[0].strip()
-                    first, _, last = spec.partition('-')
-                    first, last = first.strip(), last.strip()
-
-                    if not first:
-                        # Суффиксный диапазон "bytes=-N" = ПОСЛЕДНИЕ N байт.
-                        # Раньше он читался как "первые N байт", из-за чего
-                        # mpv не находил moov в конце больших файлов и висел.
-                        n = int(last) if last else 0
-                        if n > 0:
-                            start = max(0, file_size - n)
-                            end = file_size - 1
-                            status = 206
-                    else:
-                        start = int(first)
-                        end = int(last) if last else file_size - 1
-                        end = min(end, file_size - 1)
-                        status = 206
-                except (ValueError, IndexError):
-                    pass
+            parsed = parse_range_header(
+                request.headers.get('Range'), file_size)
+            if parsed is None:
+                return web.Response(status=416)
+            start, end, status = parsed
 
             print(f"[HTTP] idx={msg_idx} запрос диапазона {start}-{end} ({status})")
-
-            if start > end or start >= file_size:
-                return web.Response(status=416)
 
             content_length = end - start + 1
             headers = {

@@ -25,12 +25,10 @@
     backend/     Telegram: клиент, кеш, HTTP-сервер
     player/      окно плеера
     windows/     главное окно, диалоги
-    app.py       точка входа
+    player_tegr.py  точка входа
 
-Точка входа прежняя — ``player_deepseek.py``. Он остаётся фасадом:
-импортирует всё и реэкспортирует под старыми именами, поэтому тесты и
-сборка, которые обращаются к ``player_deepseek.PlayerWindow`` и
-остальному, продолжают работать без правок.
+Точка входа — ``player_tegr.py``. Старый ``player_deepseek.py`` оставлен
+для совместимости со старыми тестами и сборками.
 """
 
-__version__ = '2.0'
+from .core.version import VERSION as __version__
