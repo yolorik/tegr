@@ -309,6 +309,11 @@ QToolButton#settingbtn {{
     padding: 0;
 }}
 QToolButton#settingbtn:hover {{ background: {hover_tint}; }}
+QToolButton#rowbutton {{
+    background: transparent; border: none;
+    border-radius: {s(4)}px;
+}}
+QToolButton#rowbutton:hover {{ background: {hover_tint}; }}
 
 QListWidget, QListView {{
     background: transparent;

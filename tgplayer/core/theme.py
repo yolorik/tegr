@@ -393,6 +393,11 @@ QToolButton#settingbtn {{
 }}
 QToolButton#settingbtn:hover {{ background: {TG_HOVER}; }}
 QToolButton#settingbtn:pressed {{ background: {TG_SELECT}; }}
+QToolButton#rowbutton {{
+    background: transparent; border: none;
+    border-radius: 4px;
+}}
+QToolButton#rowbutton:hover {{ background: {TG_HOVER}; }}
 QToolButton#settingbtn::menu-indicator {{ image: none; width: 0px; }}
 
 QListWidget, QListView {{
