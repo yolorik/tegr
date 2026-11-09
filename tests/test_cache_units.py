@@ -1,6 +1,7 @@
 import unittest
 
-from tgplayer.widgets.widgets import DownloadTracker, _piece_ranges
+from tgplayer.backend.cache_math import (
+    DownloadTracker, _piece_ranges, piece_index_for)
 
 
 class DownloadTrackerTests(unittest.TestCase):
@@ -51,6 +52,23 @@ class DownloadTrackerTests(unittest.TestCase):
         tr = DownloadTracker(1000)
         tr.add_range(500, 400)
         self.assertEqual(tr.ranges, [])
+
+
+class PieceIndexTests(unittest.TestCase):
+    PIECES = [(0, 10), (10, 10), (20, 10), (30, 10)]
+
+    def test_first_piece(self):
+        self.assertEqual(piece_index_for(self.PIECES, 0), 0)
+        self.assertEqual(piece_index_for(self.PIECES, 9), 0)
+
+    def test_boundaries(self):
+        self.assertEqual(piece_index_for(self.PIECES, 10), 1)
+        self.assertEqual(piece_index_for(self.PIECES, 19), 1)
+        self.assertEqual(piece_index_for(self.PIECES, 20), 2)
+
+    def test_last_and_beyond(self):
+        self.assertEqual(piece_index_for(self.PIECES, 39), 3)
+        self.assertEqual(piece_index_for(self.PIECES, 999), 3)
 
 
 class PieceRangesTests(unittest.TestCase):

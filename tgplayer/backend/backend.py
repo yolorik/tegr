@@ -31,7 +31,8 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal
 
 from ..core import config, history, log, paths, proxy, settings, utils
 from ..system import telethon_boot
-from ..widgets.widgets import DownloadTracker, _open_read, _piece_ranges
+from .cache_math import (
+    DownloadTracker, _open_read, _piece_ranges, piece_index_for)
 from .http_range import parse_range_header
 
 CHANNEL_MARKS_FILE = 'channel_videos.json'
@@ -707,6 +708,7 @@ class TelegramBackend(QObject):
             print(f"[Кэш] Останавливать нечего: {doc_id}")
             return
         self._pause_download_on_loop(doc_id)
+        self._wake_cache(e)
         # Дескриптор закрываем отдельно от записи: ensure_cache умеет
         # открыть его заново, когда загрузку попросят снова.
         fh = e.get('fh')
@@ -783,6 +785,7 @@ class TelegramBackend(QObject):
             # Запись убираем и из кэша: иначе mpv продолжал бы играть
             # из файла, который мы только что удалили.
             e['removed'] = True
+            self._wake_cache(e)
             for t in e.get('tasks', []):
                 if not t.done():
                     t.cancel()
@@ -801,6 +804,7 @@ class TelegramBackend(QObject):
         e = self.cache.get(doc_id)
         if e is not None:
             e['removed'] = True
+            self._wake_cache(e)
             for t in e.get('tasks', []):
                 if not t.done():
                     t.cancel()
@@ -2896,6 +2900,7 @@ class TelegramBackend(QObject):
                 'queue': None,
                 'queued': set(),
                 'active': set(),
+                'data_event': asyncio.Event(),
             }
             self.cache[doc_id] = e
             return e
@@ -2966,6 +2971,7 @@ class TelegramBackend(QObject):
             'queued': queued,
             'active': active,
             'boosted': set(),
+            'data_event': asyncio.Event(),
             # Скорость считаем по байтам за последний промежуток, а не
             # накопительно: накопительная сумма росла бы бесконечно и
             # показывала «133 МБ/с» вместо настоящей скорости.
@@ -3016,16 +3022,14 @@ class TelegramBackend(QObject):
         return e
 
     @staticmethod
-    def _piece_index_for(pieces, byte_pos):
-        """Бинарный поиск индекса куска, содержащего byte_pos."""
-        lo, hi = 0, len(pieces) - 1
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if pieces[mid][0] <= byte_pos:
-                lo = mid
-            else:
-                hi = mid - 1
-        return lo
+    def _wake_cache(e):
+        """Будит HTTP-читателей, ждущих новые байты этого файла."""
+        try:
+            event = e.get('data_event') if e is not None else None
+            if event is not None:
+                event.set()
+        except Exception:
+            pass
 
     def _ensure_busy(self, e):
         """Держит воркеры занятыми, когда один завис на паузе.
@@ -3146,7 +3150,7 @@ class TelegramBackend(QObject):
             e['boosted'] = set()    # прошлое поколение больше не в счёт
         boosted = e['boosted']
 
-        target_piece = self._piece_index_for(e['pieces'], byte_pos)
+        target_piece = piece_index_for(e['pieces'], byte_pos)
 
         # Назад поднимаем только когда читатель просит самый конец файла:
         # там лежит индекс moov, и mpv читает его с конца. Во всех прочих
@@ -3193,6 +3197,7 @@ class TelegramBackend(QObject):
             return
 
         e['complete'] = True
+        self._wake_cache(e)
         for t in e.get('tasks', []):
             if not t.done():
                 t.cancel()
@@ -3442,6 +3447,9 @@ class TelegramBackend(QObject):
                             # Сразу отдаём данные на диск, чтобы HTTP-ридер
                             # видел их без задержки и не отдавал нули.
                             fh.flush()
+                            # Читатели mpv спят на событии, а не опрашивают
+                            # файл каждые 2 мс: будим их сразу после записи.
+                            self._wake_cache(e)
                             # Скорость: копим байты в окне и раз в
                             # полсекунды пересчитываем. Накопительная
                             # сумма с прошлого раза выдавала «133 МБ/с»
@@ -3802,6 +3810,14 @@ class TelegramBackend(QObject):
                 if e.get('error') and not e.get('complete'):
                     break
 
+                # Событие сбрасываем ДО проверки наличия байт: если данные
+                # придут между проверкой и ожиданием, event уже будет
+                # выставлен и разбудит читателя без задержки.
+                event = e.get('data_event')
+                if event is None:
+                    event = asyncio.Event()
+                    e['data_event'] = event
+                event.clear()
                 avail = self._available_from(e, pos)
 
                 if avail <= 0:
@@ -3813,7 +3829,7 @@ class TelegramBackend(QObject):
                     # последовательное чтение (например, индекса в хвосте)
                     # ждало бы куски в общем порядке, то есть после всей
                     # остальной загрузки.
-                    piece = self._piece_index_for(e['pieces'], pos)
+                    piece = piece_index_for(e['pieces'], pos)
                     now = time.monotonic()
                     if piece != last_prio_piece or now - last_prio_ts > 1.0:
                         self.prioritize_position(e, pos)
@@ -3840,9 +3856,14 @@ class TelegramBackend(QObject):
                         last_prio_piece = piece
                         last_prio_ts = now
 
-                    # 2 мс — достаточно мало для быстрого старта,
-                    # но не создаёт busy-loop на CPU.
-                    await asyncio.sleep(0.002)
+                    # Ждём сигнал о новых байтах. 100 мс — только
+                    # страховка от потерянного сигнала, обычно событие
+                    # срабатывает сразу после записи куска.
+                    try:
+                        await asyncio.wait_for(
+                            event.wait(), config.CACHE_WAIT_SECS)
+                    except asyncio.TimeoutError:
+                        pass
                     continue
 
                 n = min(remaining, avail, config.READ_CAP)
@@ -3869,7 +3890,11 @@ class TelegramBackend(QObject):
                 if not data:
                     if e.get('complete'):
                         break
-                    await asyncio.sleep(0.002)
+                    try:
+                        await asyncio.wait_for(
+                            event.wait(), config.CACHE_WAIT_SECS)
+                    except asyncio.TimeoutError:
+                        pass
                     continue
 
                 await response.write(data)
