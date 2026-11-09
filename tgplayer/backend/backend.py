@@ -728,17 +728,6 @@ class TelegramBackend(QObject):
                 pass
             e['fh'] = None
 
-    def forget_cache_entry(self, doc_id):
-        """Забывает готовую запись кэша, не трогая файл (Qt-поток).
-
-        Удаление самого файла — это delete_cached_file; здесь только
-        сама запись (нужно, когда файл уже удалён кем-то снаружи).
-        """
-        if self.loop is not None and not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self._forget_on_loop, doc_id)
-        else:
-            self._forget_on_loop(doc_id)
-
     def is_cached_file(self, doc_id):
         """Ролик целиком лежит файлом .mp4 в кэше.
 
@@ -814,10 +803,6 @@ class TelegramBackend(QObject):
                 if not t.done():
                     t.cancel()
             self._close_entry_handles(e)
-            # Метка для уже работающих HTTP-обработчиков: запись удалена, и
-            # ждать по ней данные больше нечего — иначе они крутились бы
-            # вечно, потому что файл уже удалён с диска.
-            e['removed'] = True
             self.cache.pop(doc_id, None)
         self._remove_cache_files(doc_id)
 
@@ -1107,7 +1092,12 @@ class TelegramBackend(QObject):
 
     def _has_active_downloads(self):
         """Качается ли сейчас хоть один кусок."""
-        return any(e.get('active') for e in self.cache.values())
+        for e in self.cache.values():
+            if e.get('active') and not (e.get('complete')
+                                        or e.get('removed')
+                                        or e.get('error')):
+                return True
+        return False
 
     def _has_waiting_readers(self):
         """Ждёт ли читатель данные, которых никто не качает.
@@ -1120,7 +1110,8 @@ class TelegramBackend(QObject):
         выглядело как «плеер пытается, но скорость стоит на нуле».
         """
         for e in self.cache.values():
-            if e.get('complete') or e.get('removed'):
+            if (e.get('complete') or e.get('removed')
+                    or e.get('error')):
                 continue
             # wanted заполняет обработчик потока, когда mpv упёрся в
             # непрокачанный участок и просит именно его. Записи старше

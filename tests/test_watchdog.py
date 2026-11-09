@@ -27,6 +27,26 @@ class WaitingReadersTests(unittest.TestCase):
             1: {'complete': True, 'wanted': {0: time.monotonic()}}}
         self.assertFalse(self.backend._has_waiting_readers())
 
+    def test_fatal_error_entry_is_ignored(self):
+        # У файла, который больше недоступен, читателя ждать нечего:
+        # иначе наблюдатель зря запускал бы переподключение.
+        self.backend.cache = {
+            1: {'error': True, 'wanted': {0: time.monotonic()}}}
+        self.assertFalse(self.backend._has_waiting_readers())
+
+
+class ActiveDownloadsTests(unittest.TestCase):
+    def setUp(self):
+        self.backend = TelegramBackend.__new__(TelegramBackend)
+
+    def test_active_piece_is_counted(self):
+        self.backend.cache = {1: {'active': {0}}}
+        self.assertTrue(self.backend._has_active_downloads())
+
+    def test_fatal_error_is_not_active(self):
+        self.backend.cache = {1: {'active': {0}, 'error': True}}
+        self.assertFalse(self.backend._has_active_downloads())
+
 
 class ReviveTests(unittest.IsolatedAsyncioTestCase):
     async def test_fatal_error_is_not_revived(self):
