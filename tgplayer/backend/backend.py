@@ -3183,7 +3183,11 @@ class TelegramBackend(QObject):
             if idx in boosted:
                 continue            # уже поднят — дублей не плодим
             boosted.add(idx)
-            q.put_nowait((base + rank, idx))
+            # Поколение в самой записи очереди: воркер сможет отличить
+            # старый подъём от свежего. Без этого после нескольких
+            # перемоток старые «срочные» куски оставались впереди и
+            # скачивались, хотя читатель их уже не ждёт.
+            q.put_nowait((base + rank, idx, gen))
             e['queued'].add(idx)
 
     @staticmethod
@@ -3191,6 +3195,14 @@ class TelegramBackend(QObject):
         """Ждёт ли этот кусок хоть один читатель прямо сейчас."""
         ts = e.get('wanted', {}).get(idx)
         return ts is not None and (time.monotonic() - ts) < ttl
+
+    def _boost_stale(self, e, boost_gen, idx):
+        """Старый подъём, который больше никому не нужен."""
+        if boost_gen is None:
+            return False
+        if boost_gen == e.get('read_gen', 0):
+            return False
+        return not self._piece_wanted(e, idx)
 
     def _finalize_cache(self, e):
         if e.get('complete'):
@@ -3308,14 +3320,29 @@ class TelegramBackend(QObject):
             if e.get('error'):
                 return
             try:
-                priority, idx = await queue.get()
+                item = await queue.get()
             except asyncio.CancelledError:
                 return
+            if len(item) == 3:
+                priority, idx, boost_gen = item
+            else:
+                priority, idx = item
+                boost_gen = None
 
             e['queued'].discard(idx)
-            e['boosted'].discard(idx)
+            # Снимаем отметку «поднят» только у записи своего поколения:
+            # иначе старый дубль снимет её у свежего подъёма.
+            if boost_gen is None or boost_gen == e.get('read_gen', 0):
+                e['boosted'].discard(idx)
 
             if idx in e['piece_done'] or idx in e['active']:
+                queue.task_done()
+                continue
+
+            # Старый подъём после перемотки: если читатель его больше не
+            # ждёт, не тратим на него полосу. Обычная запись этого куска
+            # остаётся в очереди и будет обработана в общем порядке.
+            if self._boost_stale(e, boost_gen, idx):
                 queue.task_done()
                 continue
 
