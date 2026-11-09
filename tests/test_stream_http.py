@@ -1,7 +1,16 @@
 import asyncio
 import os
+import sys
 import tempfile
 import unittest
+
+# Windows CI может запускать тесты с кодировкой cp1252; backend пишет
+# русские строки в stdout, и print падал бы с UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
