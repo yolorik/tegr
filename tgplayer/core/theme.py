@@ -502,6 +502,10 @@ QProgressBar {{
     text-align: center; color: {TG_TEXT}; font-size: 10px;
 }}
 QProgressBar::chunk {{ background: {TG_ACCENT}; border-radius: 3px; }}
+QWidget#updatebanner {{
+    background: {TG_PANEL}; border: none;
+    border-bottom: 1px solid {TG_DIVIDER}; border-radius: 0;
+}}
 
 QCheckBox, QRadioButton {{ spacing: 8px; }}
 QCheckBox::indicator, QRadioButton::indicator {{

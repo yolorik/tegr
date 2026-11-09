@@ -166,6 +166,14 @@ QFrame#tegrTopbar {{
     background: transparent; border: none;
     border-bottom: 1px solid {border}; border-radius: 0;
 }}
+/* Полоса обновления: та же тема, что и остальное окно. */
+QWidget#updatebanner {{
+    background: {panel};
+    border: none;
+    border-bottom: 1px solid {border};
+    border-radius: 0;
+}}
+QWidget#updatebanner QLabel {{ color: {text}; }}
 QFrame#tegrLeft, QFrame#tegrCenter, QFrame#tegrRight {{
     background: transparent; border: none; border-radius: 0;
 }}
@@ -288,6 +296,12 @@ QPushButton#primary {{
 }}
 QPushButton#primary:hover {{ background: {accent_hi}; }}
 QPushButton#flat {{ background: transparent; border: none; color: {accent}; }}
+QProgressBar {{
+    background: {field}; border: none; border-radius: {s(3)}px;
+}}
+QProgressBar::chunk {{
+    background: {accent}; border-radius: {s(3)}px;
+}}
 QToolButton#settingbtn {{
     background: transparent;
     border: none;

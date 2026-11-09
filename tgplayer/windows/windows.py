@@ -416,9 +416,6 @@ class UpdateBanner(QWidget):
         super().__init__(parent)
         self.setObjectName('updatebanner')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(
-            'QWidget#updatebanner { background: rgba(82, 136, 193, 0.18);'
-            ' border-radius: 8px; }')
         # Полоса не должна раздуваться на всю доступную высоту: без этого
         # она занимала треть окна и оттесняла списки вниз.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
