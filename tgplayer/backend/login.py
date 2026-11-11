@@ -135,6 +135,7 @@ class LoginMixin:
         try:
             sent = await client.send_code_request(phone)
         except telethon_boot.PhoneNumberInvalidError:
+            print(f"[Вход] Telegram не принял номер: {phone}")
             await self._ask_login('error', "Telegram не принял этот номер.")
             return 'cancel'
         except Exception as ex:
@@ -142,6 +143,7 @@ class LoginMixin:
             await self._ask_login('error', f"Не удалось отправить код: {ex}")
             return 'error'
 
+        print(f"[Вход] код отправлен для {phone}")
         code = await self._ask_login(
             'code', "Код отправлен в Telegram. Введите его сюда")
         if not code:

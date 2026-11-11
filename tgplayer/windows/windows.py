@@ -1972,6 +1972,22 @@ class HistoryRow(QWidget):
         p.end()
 
 
+def _empty_list_item(text):
+    """Единая строка-заглушка для пустых списков.
+
+    В «Загрузках» и «Истории» она раньше выглядела по-разному: одна
+    белая и обычная, другая серая и по центру. Теперь обе одинаковые.
+    """
+    item = QListWidgetItem(text)
+    item.setFlags(Qt.ItemFlag.NoItemFlags)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    try:
+        item.setForeground(QColor(theme.theme()['text_dim']))
+    except Exception:
+        pass
+    return item
+
+
 class DownloadsView(QWidget):
     """Вкладка «Загрузки»: что сейчас качается в кэш и что уже скачано.
 
@@ -2050,9 +2066,7 @@ class DownloadsView(QWidget):
             self.set_select_mode(False)
         self.btn_select.setEnabled(False)
         self._sync_delete_button()
-        item = QListWidgetItem('Сейчас ничего не качается')
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
-        self.list.addItem(item)
+        self.list.addItem(_empty_list_item('Сейчас ничего не качается'))
 
     def reset(self):
         """Сбрасывает строки: при смене масштаба их нужно пересобрать."""
@@ -4981,14 +4995,7 @@ class MainWindow(QMainWindow):
             clear_btn.setEnabled(bool(records))
 
         if not records:
-            item = QListWidgetItem('История просмотров пуста')
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            try:
-                item.setForeground(QColor(theme.theme()['text_dim']))
-            except Exception:
-                pass
-            target.addItem(item)
+            target.addItem(_empty_list_item('История просмотров пуста'))
             return
         for record in records:
             doc_id = record.get('doc_id')

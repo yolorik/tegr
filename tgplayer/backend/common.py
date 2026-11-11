@@ -9,10 +9,17 @@ def _normalize_phone(text):
     """Приводит номер к виду, который понимает Telegram: плюс и цифры.
 
     Пользователь вводит номер как привык — с пробелами, скобками и
-    дефисами; Telegram такие не принимает.
+    дефисами; Telegram такие не принимает. Отдельно понимаем русскую
+    привычку набирать 8XXXXXXXXXX: для Telegram это +7XXXXXXXXXX.
     """
-    digits = ''.join(ch for ch in (text or '') if ch.isdigit())
-    return ('+' + digits) if digits else ''
+    raw = str(text or '').strip()
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return ''
+    if (not raw.lstrip().startswith('+') and len(digits) == 11
+            and digits.startswith('8')):
+        digits = '7' + digits[1:]
+    return '+' + digits
 
 def _remove_session_files():
     """Удаляет файл сессии Telethon вместе со служебными файлами.
