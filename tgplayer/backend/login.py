@@ -10,6 +10,23 @@ from .common import _normalize_phone
 RESEND_CODE = "__resend_code__"
 
 
+async def _fresh_code_request(client, phone):
+    """Просит у Telegram новый код, а не повтор старого.
+
+    Обычный повторный send_code_request в Telethon превращается в
+    ResendCodeRequest. Telegram отвечает на него «all available options
+    already used», потому что для номера уже использованы все способы.
+    Сбрасываем сохранённый phone_code_hash, чтобы ушёл новый SendCodeRequest.
+    """
+    try:
+        hashes = getattr(client, '_phone_code_hash', None)
+        if hashes is not None:
+            hashes.pop(phone, None)
+    except Exception:
+        pass
+    return await client.send_code_request(phone)
+
+
 
 def _code_delivery_hint(sent):
     """Куда Telegram отправил код — чтобы человек знал, где искать.
@@ -208,7 +225,7 @@ class LoginMixin:
             # Повторный запрос: Telegram сам выберет следующий способ
             # доставки (например, почту после приложения).
             try:
-                sent = await client.send_code_request(phone)
+                sent = await _fresh_code_request(client, phone)
                 log_delivery(sent)
                 hint = _code_delivery_hint(sent)
                 print(f"[Вход] код запрошен повторно для {phone}")
