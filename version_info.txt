@@ -3,8 +3,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(4, 0, 3, 0),
-    prodvers=(4, 0, 3, 0),
+    filevers=(4, 0, 4, 0),
+    prodvers=(4, 0, 4, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,12 +19,12 @@ VSVersionInfo(
           u'041904E3',
           [StringStruct(u'CompanyName', u'Tegr'),
            StringStruct(u'FileDescription', u'Tegr — видеоплеер для Telegram'),
-           StringStruct(u'FileVersion', u'4.0.3'),
+           StringStruct(u'FileVersion', u'4.0.4'),
            StringStruct(u'InternalName', u'Tegr'),
            StringStruct(u'LegalCopyright', u''),
            StringStruct(u'OriginalFilename', u'Tegr.exe'),
            StringStruct(u'ProductName', u'Tegr'),
-           StringStruct(u'ProductVersion', u'4.0.3'),
+           StringStruct(u'ProductVersion', u'4.0.4'),
            StringStruct(u'Comments', u'')])
       ]
     ),

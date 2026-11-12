@@ -1,4 +1,10 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param(
+    [string]$DistDir = 'dist',
+    [string]$BuildDir = 'build',
+    [switch]$AllowRunning
+)
+
+$ErrorActionPreference = 'Stop'
 
 # Build Tegr.exe from this directory.
 # Name and version come from tgplayer/core/version.py.
@@ -30,14 +36,14 @@ Write-Output "App: $nm $ver"
 Write-Output "Root: $root"
 
 $running = Get-Process -Name $nm -ErrorAction SilentlyContinue
-if ($running) {
+if ($running -and -not $AllowRunning) {
     Write-Output "Close $nm before building."
     exit 1
 }
 
-$dist = Join-Path $root 'dist'
+$dist = Join-Path $root $DistDir
 $dst = Join-Path $dist $nm
-$build = Join-Path $root 'build'
+$build = Join-Path $root $BuildDir
 $entry = Join-Path $root 'player_tegr.py'
 $icon = Join-Path $root 'tgplayer.ico'
 $mpvDll = Join-Path $root 'libmpv-2.dll'
