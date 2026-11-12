@@ -6,8 +6,40 @@ from ..system import telethon_boot
 from .common import _normalize_phone
 
 
-# Ответ UI: человек просит отправить код ещё раз, но уже по SMS.
-RESEND_SMS = "__resend_sms__"
+
+def _code_delivery_hint(sent):
+    """Куда Telegram отправил код — чтобы человек знал, где искать.
+
+    В России SMS часто не приходит: код уходит в приложение Telegram или
+    на привязанную почту. Без подсказки окно «введите код» выглядит так,
+    будто код потерялся.
+    """
+    kind = type(getattr(sent, 'type', None)).__name__
+    hints = {
+        'SentCodeTypeApp':
+            "Код отправлен в Telegram. Откройте Telegram на другом "
+            "устройстве и проверьте чат «Telegram» (служебные сообщения).",
+        'SentCodeTypeEmailCode':
+            "Код отправлен на почту, привязанную к аккаунту Telegram.",
+        'SentCodeTypeSms':
+            "Код отправлен по SMS.",
+        'SentCodeTypeSmsWord':
+            "Код отправлен по SMS. Первое слово сообщения — часть кода.",
+        'SentCodeTypeSmsPhrase':
+            "Код отправлен по SMS. Код — фраза из сообщения.",
+        'SentCodeTypeCall':
+            "Telegram позвонит на номер и продиктует код.",
+        'SentCodeTypeFlashCall':
+            "Telegram позвонит. Код — последние цифры номера звонящего.",
+        'SentCodeTypeMissedCall':
+            "Telegram позвонит и сбросит. Код — последние цифры номера.",
+        'SentCodeTypeFragmentSms':
+            "Код отправлен через Fragment на номер из Telegram.",
+        'SentCodeTypeFirebaseSms':
+            "Код отправлен по SMS.",
+    }
+    return hints.get(
+        kind, "Код отправлен. Проверьте Telegram (чат «Telegram») или почту.")
 
 
 class LoginMixin:
@@ -137,10 +169,11 @@ class LoginMixin:
 
         print(f"[Вход] запрашиваю код для {phone}")
         try:
-            # force_sms=True: иначе Telegram может отправить код в
-            # приложение на другом устройстве, а на компьютере он не
-            # появится. Для входа с ПК нужен именно SMS.
-            sent = await client.send_code_request(phone, force_sms=True)
+            # force_sms в Telethon 1.45 устарел и превращается в
+            # ResendCodeRequest, который после первой отправки отвечает
+            # ошибкой. Отправляем обычный запрос: Telegram сам выберет
+            # приложение, почту или SMS.
+            sent = await client.send_code_request(phone)
         except telethon_boot.PhoneNumberInvalidError:
             print(f"[Вход] Telegram не принял номер: {phone}")
             await self._ask_login('error', "Telegram не принял этот номер.")
@@ -150,24 +183,11 @@ class LoginMixin:
             await self._ask_login('error', f"Не удалось отправить код: {ex}")
             return 'error'
 
-        print(f"[Вход] код отправлен по SMS для {phone}")
-        while True:
-            code = await self._ask_login(
-                'code', "Код отправлен по SMS. Введите его сюда")
-            if not code:
-                return 'cancel'
-            if code != RESEND_SMS:
-                break
-            # Код не пришёл — отправляем ещё раз, явно по SMS.
-            try:
-                sent = await client.send_code_request(
-                    phone, force_sms=True)
-                print(f"[Вход] код отправлен повторно по SMS для {phone}")
-            except Exception as ex:
-                print(f"[Вход] SMS не отправлено: {ex}")
-                await self._ask_login(
-                    'error', f"Не удалось отправить SMS: {ex}")
-                return 'error'
+        hint = _code_delivery_hint(sent)
+        print(f"[Вход] код отправлен для {phone}: {hint}")
+        code = await self._ask_login('code', hint)
+        if not code:
+            return 'cancel'
         code = ''.join(ch for ch in code if ch.isdigit()) or code
 
         try:
