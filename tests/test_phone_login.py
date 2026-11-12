@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from tgplayer.backend.common import _normalize_phone
-from tgplayer.backend.login import LoginMixin
+from tgplayer.backend.login import RESEND_SMS, LoginMixin
 
 
 class PhoneNormalizationTests(unittest.TestCase):
@@ -33,10 +33,15 @@ class _Client:
     def __init__(self):
         self.phone = None
         self.sign_args = None
+        self.calls = []
+        self.force_sms = []
 
-    async def send_code_request(self, phone):
+    async def send_code_request(self, phone, force_sms=False):
         self.phone = phone
-        return SimpleNamespace(phone_code_hash='demo-hash')
+        self.force_sms.append(bool(force_sms))
+        self.calls.append(phone)
+        return SimpleNamespace(
+            phone_code_hash=f'demo-hash-{len(self.calls)}')
 
     async def sign_in(self, **kwargs):
         self.sign_args = kwargs
@@ -71,7 +76,19 @@ class PhoneLoginFlowTests(unittest.IsolatedAsyncioTestCase):
                          '+79785782789')
         self.assertEqual(backend.client.sign_args['code'], '12345')
         self.assertEqual(backend.client.sign_args['phone_code_hash'],
-                         'demo-hash')
+                         'demo-hash-1')
+        self.assertEqual(backend.client.force_sms, [True])
+
+    async def test_resend_sms_updates_phone_code_hash(self):
+        backend = _Backend(['8 (978) 578-27-89', RESEND_SMS, '12345'])
+        status = await backend._interactive_login()
+
+        self.assertEqual(status, 'ok')
+        self.assertEqual(backend.client.calls,
+                         ['+79785782789', '+79785782789'])
+        self.assertEqual(backend.client.force_sms, [True, True])
+        self.assertEqual(backend.client.sign_args['phone_code_hash'],
+                         'demo-hash-2')
 
     async def test_short_phone_is_rejected_before_network(self):
         backend = _Backend(['123'])

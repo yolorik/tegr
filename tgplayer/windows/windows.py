@@ -39,6 +39,7 @@ from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
 from ..backend.backend import TelegramBackend
+from ..backend.login import RESEND_SMS
 
 # Доли верхней полосы: сколько ширины получают список папок и поиск.
 # Три к одному — примерно четверть окна под папку, остальное под поиск.
@@ -262,6 +263,18 @@ class LoginDialog(QDialog):
         # «назад»: человек понял, что код не приходит (Telegram отправил
         # его в приложение, а не по SMS), и хочет войти по коду с экрана.
         # Отменять вход целиком для этого не нужно.
+        self.btn_sms = None
+        self.resend_sms = False
+        if kind == 'code':
+            # Если SMS не пришло, его можно запросить ещё раз — не
+            # закрывая окно и не теряя уже введённый номер.
+            self.btn_sms = QPushButton('Отправить код по SMS')
+            self.btn_sms.setObjectName('flat')
+            self.btn_sms.setMinimumHeight(34)
+            self.btn_sms.clicked.connect(self._choose_sms)
+            lay.addWidget(self.btn_sms)
+            lay.addSpacing(4)
+
         self.btn_qr = None
         if not secret:
             self.btn_qr = QPushButton('Войти по QR-коду'
@@ -354,6 +367,11 @@ class LoginDialog(QDialog):
         return pix.scaled(size, size,
                           Qt.AspectRatioMode.IgnoreAspectRatio,
                           Qt.TransformationMode.SmoothTransformation)
+
+    def _choose_sms(self):
+        """Просит отправить код ещё раз, уже по SMS."""
+        self.resend_sms = True
+        self.accept()
 
     def _choose_qr(self):
         """Человек выбрал вход по QR вместо номера.
@@ -3211,6 +3229,9 @@ class MainWindow(QMainWindow):
             # Вместо этого сразу показываем код с экрана.
             if getattr(dlg, 'qr_chosen', False):
                 self._login_by_qr()
+                return
+            if getattr(dlg, 'resend_sms', False):
+                self.backend.answer_login(RESEND_SMS)
                 return
             self.backend.answer_login(dlg.value())
             return

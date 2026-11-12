@@ -6,6 +6,10 @@ from ..system import telethon_boot
 from .common import _normalize_phone
 
 
+# Ответ UI: человек просит отправить код ещё раз, но уже по SMS.
+RESEND_SMS = "__resend_sms__"
+
+
 class LoginMixin:
     async def _ask_login(self, kind, message):
         """Спрашивает данные входа у пользователя и ждёт ответа.
@@ -133,7 +137,10 @@ class LoginMixin:
 
         print(f"[Вход] запрашиваю код для {phone}")
         try:
-            sent = await client.send_code_request(phone)
+            # force_sms=True: иначе Telegram может отправить код в
+            # приложение на другом устройстве, а на компьютере он не
+            # появится. Для входа с ПК нужен именно SMS.
+            sent = await client.send_code_request(phone, force_sms=True)
         except telethon_boot.PhoneNumberInvalidError:
             print(f"[Вход] Telegram не принял номер: {phone}")
             await self._ask_login('error', "Telegram не принял этот номер.")
@@ -143,11 +150,24 @@ class LoginMixin:
             await self._ask_login('error', f"Не удалось отправить код: {ex}")
             return 'error'
 
-        print(f"[Вход] код отправлен для {phone}")
-        code = await self._ask_login(
-            'code', "Код отправлен в Telegram. Введите его сюда")
-        if not code:
-            return 'cancel'
+        print(f"[Вход] код отправлен по SMS для {phone}")
+        while True:
+            code = await self._ask_login(
+                'code', "Код отправлен по SMS. Введите его сюда")
+            if not code:
+                return 'cancel'
+            if code != RESEND_SMS:
+                break
+            # Код не пришёл — отправляем ещё раз, явно по SMS.
+            try:
+                sent = await client.send_code_request(
+                    phone, force_sms=True)
+                print(f"[Вход] код отправлен повторно по SMS для {phone}")
+            except Exception as ex:
+                print(f"[Вход] SMS не отправлено: {ex}")
+                await self._ask_login(
+                    'error', f"Не удалось отправить SMS: {ex}")
+                return 'error'
         code = ''.join(ch for ch in code if ch.isdigit()) or code
 
         try:
