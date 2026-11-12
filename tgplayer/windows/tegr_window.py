@@ -1337,7 +1337,7 @@ class TegrMainWindow(MainWindow):
         self._tegr_narrow_group = QButtonGroup(self)
         self._tegr_narrow_group.setExclusive(True)
         self._tegr_narrow_buttons = []
-        for index, text in enumerate(('Каналы', 'История', 'Загрузки')):
+        for index, text in enumerate(('Каналы', 'Загрузки', 'История')):
             btn = QPushButton(text)
             btn.setObjectName('tegrTab')
             btn.setCheckable(True)
@@ -1545,12 +1545,12 @@ class TegrMainWindow(MainWindow):
             # только перетаскивание (splitterMoved) и закрытие окна.
 
             # Уход из узкого режима: вкладка «Каналы» возвращает в поток
-            # каналов, «История»/«Загрузки» — в правую колонку.
+            # каналов, «Загрузки»/«История» — в правую колонку.
             if old == 'narrow':
                 if self._tegr_narrow_tab == 1:
-                    self._tegr_right_page = 'history'
-                elif self._tegr_narrow_tab == 2:
                     self._tegr_right_page = 'downloads'
+                elif self._tegr_narrow_tab == 2:
+                    self._tegr_right_page = 'history'
 
             # Вход в узкий режим: если канал открыт, оставляем на экране
             # видео, иначе — список каналов.
@@ -1605,7 +1605,7 @@ class TegrMainWindow(MainWindow):
                 # всегда показываем каналы/видео. Сохраняем вкладку
                 # загрузок/истории только при сужении из широкого окна.
                 if old == 'wide' and self._tegr_last_area == 'right':
-                    tab = 1 if self._tegr_right_page == 'history' else 2
+                    tab = 2 if self._tegr_right_page == 'history' else 1
                 self._tegr_show_narrow_tab(tab)
             elif self._tegr_right_visible(mode):
                 self._tegr_sync_right_driver()
@@ -2245,7 +2245,7 @@ class TegrMainWindow(MainWindow):
         self._tegr_right_page = name
         self._tegr_last_area = 'right'
         if getattr(self, '_tegr_mode', 'wide') == 'narrow':
-            self._tegr_show_narrow_tab(2 if index == 0 else 1)
+            self._tegr_show_narrow_tab(1 if index == 0 else 2)
             return
         page = (self._tegr_downloads_page if index == 0
                 else self._tegr_history_page)
@@ -2268,7 +2268,7 @@ class TegrMainWindow(MainWindow):
         self._tegr_show_narrow_tab(index)
 
     def _tegr_show_narrow_tab(self, index):
-        """Одна колонка: Каналы (0), История (1), Загрузки (2)."""
+        """Одна колонка: Каналы (0), Загрузки (1), История (2)."""
         prev = getattr(self, '_tegr_narrow_tab', 0)
         index = max(0, min(2, int(index)))
         direction = 1 if index >= prev else -1
@@ -2284,16 +2284,16 @@ class TegrMainWindow(MainWindow):
                 self._tegr_drive_main_tab('channels')
             elif index == 1:
                 self._tegr_show_page(self._tegr_left_stack,
-                                     self._tegr_history_page,
-                                     direction=direction)
-                self._tegr_right_page = 'history'
-                self._tegr_drive_main_tab('history')
-            else:
-                self._tegr_show_page(self._tegr_left_stack,
                                      self._tegr_downloads_page,
                                      direction=direction)
                 self._tegr_right_page = 'downloads'
                 self._tegr_drive_main_tab('downloads')
+            else:
+                self._tegr_show_page(self._tegr_left_stack,
+                                     self._tegr_history_page,
+                                     direction=direction)
+                self._tegr_right_page = 'history'
+                self._tegr_drive_main_tab('history')
         except Exception:
             pass
         self._tegr_update_narrow_tabs()
