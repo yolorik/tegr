@@ -811,6 +811,13 @@ class TegrMainWindow(MainWindow):
         except Exception:
             pass
         super().__init__(backend)
+        # В новом окне нижняя строка состояния не нужна: она отнимала
+        # высоту у списков и дублировала состояние в верхней панели.
+        try:
+            self._status_bar.hide()
+            self._status_bar.setMaximumHeight(0)
+        except Exception:
+            pass
         self._build_tegr_ui()
         self._tegr_replace_status_label()
         self._tegr_ready = True
@@ -835,8 +842,12 @@ class TegrMainWindow(MainWindow):
     # ------------------------------------------------------------------
     def showEvent(self, event):
         super().showEvent(event)
+        try:
+            self._status_bar.hide()
+            self._status_bar.setMaximumHeight(0)
+        except Exception:
+            pass
         self._tegr_ensure_fade_filter()
-        self._tegr_fit_statusbar()
         if not getattr(self, '_tegr_focus_set', False):
             self._tegr_focus_set = True
             QTimer.singleShot(0, self._tegr_focus_target)

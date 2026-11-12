@@ -2002,7 +2002,8 @@ def _empty_list_item(text):
     """
     item = QListWidgetItem(text)
     item.setFlags(Qt.ItemFlag.NoItemFlags)
-    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                          | Qt.AlignmentFlag.AlignVCenter)
     try:
         item.setForeground(QColor(theme.theme()['text_dim']))
     except Exception:
