@@ -19,6 +19,10 @@ from . import version as _version
 # импорта остальных модулей (см. paths.set_base_dir). Менять BASE_DIR на
 # лету нельзя — на нём построены дороги к сессии, кешу и настройкам.
 BASE_DIR = paths.app_dir()
+# Вход по номеру временно отключён: Telegram в РФ не доставляет коды
+# ни по SMS, ни в приложение на этом устройстве. QR работает.
+PHONE_LOGIN_ENABLED = False
+
 API_ID = 38968042
 API_HASH = '269f14a65a0b59db02672551a8b9046d'
 STREAM_PORT = 8081

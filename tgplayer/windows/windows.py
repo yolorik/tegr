@@ -67,7 +67,7 @@ class QrLoginDialog(QDialog):
     камеру на код.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, phone_available=True):
         super().__init__(parent)
         self.setWindowTitle('Вход по QR-коду')
         self.setModal(True)
@@ -88,6 +88,11 @@ class QrLoginDialog(QDialog):
         sub.setWordWrap(True)
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(sub)
+        if not phone_available:
+            note = QLabel('Вход по номеру временно недоступен.')
+            note.setObjectName('hint')
+            note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(note)
         lay.addSpacing(6)
 
         # Картинка QR. Белая подложка обязательна: на тёмной теме чёрные
@@ -112,7 +117,8 @@ class QrLoginDialog(QDialog):
         # Кнопка называется «Назад», а не «Отмена»: она возвращает к
         # вводу номера, а не закрывает программу. Отмена на этом экране
         # пугала — человек думал, что сейчас всё закроется.
-        self.btn_back = QPushButton('Назад')
+        self.btn_back = QPushButton(
+            'Назад' if phone_available else 'Отмена')
         self.btn_back.setObjectName('flat')
         self.btn_back.setMinimumHeight(34)
         self.btn_back.clicked.connect(self._go_back)
@@ -3219,6 +3225,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'Вход в Telegram', message)
             self.backend.answer_login(None)
             return
+        if kind == 'phone' and not getattr(config, 'PHONE_LOGIN_ENABLED', True):
+            print("[Вход] вход по номеру временно отключён — показываю QR")
+            self._login_by_qr()
+            return
         dlg = LoginDialog(kind, message, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # Выбран вход по QR. Отмену НЕ отправляем: по ней backend
@@ -3247,7 +3257,8 @@ class MainWindow(QMainWindow):
     def _login_by_qr(self):
         """Вход по QR: показываем код и ждём подтверждения с телефона."""
         print("[Вход] выбран вход по QR")
-        dlg = QrLoginDialog(self)
+        phone_available = bool(getattr(config, 'PHONE_LOGIN_ENABLED', True))
+        dlg = QrLoginDialog(self, phone_available=phone_available)
 
         def on_url(url):
             # Из потока backend в Qt — только сигналом.
@@ -3276,6 +3287,13 @@ class MainWindow(QMainWindow):
         def on_done(status):
             dlg.accept()
             if status != 'ok':
+                if not phone_available:
+                    QMessageBox.warning(
+                        self, 'Вход в Telegram',
+                        'Не удалось войти по QR-коду. Программа будет '
+                        'закрыта.')
+                    self.backend._stop_connect = True
+                    QApplication.instance().quit()
                 return
             self.set_status('Вход выполнен')
             # Показываем окно и только потом грузим данные.
@@ -3305,9 +3323,18 @@ class MainWindow(QMainWindow):
         # Для этого останавливаем ожидание входа: иначе backend остался
         # бы ждать сканирования кода, который уже никто не видит.
         if getattr(dlg, 'result_kind', None) == 'back':
-            print("[Вход] возврат к вводу номера")
-            self.backend._stop_connect = False
-            self._login_by_phone_again()
+            if phone_available:
+                print("[Вход] возврат к вводу номера")
+                self.backend._stop_connect = False
+                self._login_by_phone_again()
+            else:
+                print("[Вход] QR закрыт — выхожу из программы")
+                self.backend._stop_connect = True
+                QApplication.instance().quit()
+        elif not phone_available and dlg.result() != QDialog.DialogCode.Accepted:
+            print("[Вход] QR закрыт — выхожу из программы")
+            self.backend._stop_connect = True
+            QApplication.instance().quit()
 
         for sig, slot in ((self._qr_url, dlg.set_url),
                           (self._qr_state, dlg.set_state)):
