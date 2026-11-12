@@ -6,6 +6,10 @@ from ..system import telethon_boot
 from .common import _normalize_phone
 
 
+# Ответ UI: запросить код ещё раз (без принудительного SMS).
+RESEND_CODE = "__resend_code__"
+
+
 
 def _code_delivery_hint(sent):
     """Куда Telegram отправил код — чтобы человек знал, где искать.
@@ -17,10 +21,12 @@ def _code_delivery_hint(sent):
     kind = type(getattr(sent, 'type', None)).__name__
     hints = {
         'SentCodeTypeApp':
-            "Код отправлен в Telegram. Откройте Telegram на другом "
-            "устройстве и проверьте чат «Telegram» (служебные сообщения).",
+            "Код отправлен в Telegram. Проверьте чат «Telegram» "
+            "(служебные сообщения) на любом устройстве, где выполнен "
+            "вход. Если кода нет — нажмите «Запросить код ещё раз».",
         'SentCodeTypeEmailCode':
-            "Код отправлен на почту, привязанную к аккаунту Telegram.",
+            "Код отправлен на почту, привязанную к аккаунту Telegram. "
+            "Если письма нет — проверьте спам или запросите код ещё раз.",
         'SentCodeTypeSms':
             "Код отправлен по SMS.",
         'SentCodeTypeSmsWord':
@@ -183,11 +189,34 @@ class LoginMixin:
             await self._ask_login('error', f"Не удалось отправить код: {ex}")
             return 'error'
 
+        def log_delivery(sent_code):
+            next_type = getattr(sent_code, 'next_type', None)
+            print(f"[Вход] код отправлен для {phone}: "
+                  f"{type(getattr(sent_code, 'type', None)).__name__}, "
+                  f"следующий способ: "
+                  f"{type(next_type).__name__ if next_type else 'нет'}, "
+                  f"таймаут: {getattr(sent_code, 'timeout', None)}")
+
+        log_delivery(sent)
         hint = _code_delivery_hint(sent)
-        print(f"[Вход] код отправлен для {phone}: {hint}")
-        code = await self._ask_login('code', hint)
-        if not code:
-            return 'cancel'
+        while True:
+            code = await self._ask_login('code', hint)
+            if not code:
+                return 'cancel'
+            if code != RESEND_CODE:
+                break
+            # Повторный запрос: Telegram сам выберет следующий способ
+            # доставки (например, почту после приложения).
+            try:
+                sent = await client.send_code_request(phone)
+                log_delivery(sent)
+                hint = _code_delivery_hint(sent)
+                print(f"[Вход] код запрошен повторно для {phone}")
+            except Exception as ex:
+                print(f"[Вход] код не запрошен повторно: {ex}")
+                await self._ask_login(
+                    'error', f"Не удалось запросить код ещё раз: {ex}")
+                return 'error'
         code = ''.join(ch for ch in code if ch.isdigit()) or code
 
         try:

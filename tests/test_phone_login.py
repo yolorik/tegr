@@ -2,7 +2,8 @@ import unittest
 from types import SimpleNamespace
 
 from tgplayer.backend.common import _normalize_phone
-from tgplayer.backend.login import LoginMixin, _code_delivery_hint
+from tgplayer.backend.login import (
+    RESEND_CODE, LoginMixin, _code_delivery_hint)
 
 
 class PhoneNormalizationTests(unittest.TestCase):
@@ -76,6 +77,16 @@ class PhoneLoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.client.sign_args['code'], '12345')
         self.assertEqual(backend.client.sign_args['phone_code_hash'],
                          'demo-hash-1')
+
+    async def test_resend_code_requests_new_hash(self):
+        backend = _Backend(['8 (978) 578-27-89', RESEND_CODE, '12345'])
+        status = await backend._interactive_login()
+
+        self.assertEqual(status, 'ok')
+        self.assertEqual(backend.client.calls,
+                         ['+79785782789', '+79785782789'])
+        self.assertEqual(backend.client.sign_args['phone_code_hash'],
+                         'demo-hash-2')
 
     async def test_short_phone_is_rejected_before_network(self):
         backend = _Backend(['123'])

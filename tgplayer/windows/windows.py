@@ -39,6 +39,7 @@ from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
 from ..backend.backend import TelegramBackend
+from ..backend.login import RESEND_CODE
 
 # Доли верхней полосы: сколько ширины получают список папок и поиск.
 # Три к одному — примерно четверть окна под папку, остальное под поиск.
@@ -262,6 +263,16 @@ class LoginDialog(QDialog):
         # «назад»: человек понял, что код не приходит (Telegram отправил
         # его в приложение, а не по SMS), и хочет войти по коду с экрана.
         # Отменять вход целиком для этого не нужно.
+        self.btn_resend = None
+        self.resend_code = False
+        if kind == 'code':
+            self.btn_resend = QPushButton('Запросить код ещё раз')
+            self.btn_resend.setObjectName('flat')
+            self.btn_resend.setMinimumHeight(34)
+            self.btn_resend.clicked.connect(self._choose_resend)
+            lay.addWidget(self.btn_resend)
+            lay.addSpacing(4)
+
         self.btn_qr = None
         if not secret:
             self.btn_qr = QPushButton('Войти по QR-коду'
@@ -354,6 +365,11 @@ class LoginDialog(QDialog):
         return pix.scaled(size, size,
                           Qt.AspectRatioMode.IgnoreAspectRatio,
                           Qt.TransformationMode.SmoothTransformation)
+
+    def _choose_resend(self):
+        """Просит Telegram отправить код ещё раз другим способом."""
+        self.resend_code = True
+        self.accept()
 
     def _choose_qr(self):
         """Человек выбрал вход по QR вместо номера.
@@ -3211,6 +3227,9 @@ class MainWindow(QMainWindow):
             # Вместо этого сразу показываем код с экрана.
             if getattr(dlg, 'qr_chosen', False):
                 self._login_by_qr()
+                return
+            if getattr(dlg, 'resend_code', False):
+                self.backend.answer_login(RESEND_CODE)
                 return
             self.backend.answer_login(dlg.value())
             return
