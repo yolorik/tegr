@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Сборка и релизы
+build/
+dist/
+dist_*/
+build_*/
+releases/
+_inst_check/
+_release_*/
+
+# Библиотеки, которые кладутся в поставку отдельно
+libmpv-2.dll
+vulkan-1.dll
+
+# Личные данные и кэш
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+settings.json
+history.json
+channel_videos.json
+tegr.log
+tegr.log.*
+stream_cache/
+
+# Бэкапы исходников
+_backups/
+
+# Временные проверки
+_speed_test.py
+_speed_variants.py
+_zoom.py
+speed_report.txt
+speed_variants.txt

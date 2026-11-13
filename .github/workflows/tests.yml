@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -v
+      - name: Compile all Python sources
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m compileall -q tegr player_tegr.py tegr_runtime.py
