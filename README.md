@@ -6,8 +6,6 @@ Tegr не ждёт полной загрузки ролика: видео идё
 
 ## Скриншоты
 
-Нажмите на миниатюру, чтобы открыть полный скриншот.
-
 <p align="center">
   <a href="docs/screenshots/main-wide.png"><img src="docs/screenshots/thumbs/main-wide.png" alt="Широкое окно: каналы, видео и загрузки" width="720"></a>
 </p>
