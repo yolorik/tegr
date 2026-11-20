@@ -28,7 +28,7 @@
   #define AppName "Tegr"
 #endif
 #ifndef AppVersion
-  #define AppVersion "4.0.4"
+  #define AppVersion "4.1.0"
 #endif
 #ifndef AppExe
   #define AppExe "Tegr.exe"

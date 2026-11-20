@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PyQt6.QtCore import (
     QCollator, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt,
     QThread, QTimer, pyqtSignal)
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QFontMetrics, QFontMetricsF, QIcon,
     QImage, QKeySequence, QPalette,
@@ -39,6 +40,49 @@ from ..core import settings as app_settings
 from ..icons import icons
 from ..player.player import PlayerWindow
 from ..backend.backend import TelegramBackend
+
+# Имя одно и то же у мьютекса и у локального сервера: по нему второй
+# запуск находит уже работающую программу.
+SINGLE_INSTANCE_NAME = 'TegrStudioSingleInstance'
+
+
+class _SingleInstanceClient:
+    """Второй запуск: просит уже работающую программу показать окно.
+
+    Возвращается из _single_instance_guard вместо мьютекса, если плеер
+    уже запущен. Молча выключаться в этом случае нельзя: человек свернул
+    окно в трей и ткнул в ярлык именно для того, чтобы вернуть его на
+    экран. Сигнал уходит первому экземпляру, а этот процесс сразу
+    завершается.
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+    def ping(self, timeout_ms=1500):
+        """Просит работающий экземпляр показаться. True — если услышал."""
+        socket = QLocalSocket()
+        try:
+            socket.connectToServer(self.name)
+            if not socket.waitForConnected(int(timeout_ms)):
+                return False
+            socket.write(b'show')
+            socket.flush()
+            socket.waitForBytesWritten(int(timeout_ms))
+            # Ответа не ждём: главное — команду передать, а окно первый
+            # экземпляр покажет сам.
+            socket.disconnectFromServer()
+            if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+                socket.waitForDisconnected(200)
+            return True
+        except Exception as ex:  # noqa: BLE001
+            print(f'[Запуск] связаться с уже открытым плеером не удалось: {ex}')
+            return False
+        finally:
+            try:
+                socket.abort()
+            except Exception:
+                pass
 from ..backend.login import RESEND_CODE
 
 # Доли верхней полосы: сколько ширины получают список папок и поиск.
@@ -3442,6 +3486,8 @@ class MainWindow(QMainWindow):
         print(f"[Трей] показан: visible={tray.isVisible()}, "
               f"место={tray.geometry().x()}x{tray.geometry().y()}")
         QTimer.singleShot(1500, self._check_tray_alive)
+        # Повторный запуск программы — это «покажи окно», а не ошибка.
+        self.listen_single_instance()
         # Тему Windows можно переключить при работающей программе — свет
         # и тьму панели задач. Значок обязан перекраситься сразу, иначе
         # он проживёт до перезапуска невидимым на новом фоне.
@@ -3520,7 +3566,77 @@ class MainWindow(QMainWindow):
                       QSystemTrayIcon.ActivationReason.DoubleClick):
             self._show_from_tray()
 
+    # ------------------------------------------------------------------
+    # Один экземпляр: повторный запуск показывает это окно
+    # ------------------------------------------------------------------
+    def listen_single_instance(self, name=SINGLE_INSTANCE_NAME):
+        """Слушает просьбы второго запуска «покажи окно».
+
+        Когда человек ещё раз нажимает на ярлык, второй экземпляр не
+        запускается (см. _single_instance_guard), а посылает сюда «show».
+        Мы разворачиваемся из трея. Имя сервера — то же, что у мьютекса:
+        на него и приходят эти просьбы.
+
+        removeServer освобождает имя, если его держал сокет от прежнего,
+        аварийно завершённого процесса: иначе listen() не поднимется.
+        """
+        if getattr(self, '_instance_server', None) is not None:
+            return
+        try:
+            # Родитель — этот объект, как и у всего, что живёт с окном.
+            # У слушателя может и не быть Qt-родителя: QLocalServer
+            # принимает только QObject, поэтому проверяем.
+            parent = self if isinstance(self, QObject) else None
+            server = QLocalServer(parent) if parent is not None else QLocalServer()
+            QLocalServer.removeServer(name)
+            if not server.listen(name):
+                print(f'[Запуск] слушать повторный запуск не удалось: '
+                      f'{server.errorString()}')
+                return
+            server.newConnection.connect(self._on_instance_ping)
+            self._instance_server = server
+            print(f'[Запуск] повторный запуск покажет окно: {name}')
+        except Exception as ex:  # noqa: BLE001
+            print(f'[Запуск] слушатель повторного запуска не поднялся: {ex}')
+
+    def _on_instance_ping(self):
+        """Пришла просьба показать окно — разворачиваемся из трея."""
+        server = getattr(self, '_instance_server', None)
+        if server is None:
+            return
+        while server.hasPendingConnections():
+            conn = server.nextPendingConnection()
+            if conn is None:
+                break
+            try:
+                conn.waitForReadyRead(300)
+                conn.readAll()
+            except Exception:
+                pass
+            try:
+                conn.disconnectFromServer()
+                conn.deleteLater()
+            except Exception:
+                pass
+        self._show_from_tray()
+        # Главное окно на экране — но поверх может висеть плеер.
+        pw = getattr(self, 'player_window', None)
+        if pw is not None and not getattr(pw, '_closed', True):
+            try:
+                if pw.isVisible():
+                    pw.raise_()
+                    pw.activateWindow()
+            except Exception:
+                pass
+
     def _show_from_tray(self):
+        """Показывает главное окно, даже если оно свёрнуто в трей."""
+        # Свёрнутое в трей окно спрятано через hide(): showNormal() его
+        # не вытащит — у скрытого окна нет «свёрнутого» состояния.
+        if not self.isVisible():
+            self.show()
+        self.setWindowState(
+            self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -6073,9 +6189,14 @@ def _single_instance_guard():
     """Не даёт запустить второй экземпляр программы.
 
     Два процесса на одном файле сессии Telethon — известный способ её
-    испортить, плюс они подерутся за порт локального сервера. Возвращает
-    объект, который надо держать живым до выхода, либо None, если плеер
-    уже запущен.
+    испортить, плюс они подерутся за порт локального сервера.
+
+    Возвращает:
+      * объект-мьютекс, пока программа ещё не запущена (держать живым
+        до выхода);
+      * _SingleInstanceClient, если плеер уже работает: у него есть
+        ping(), которым второй запуск просит показать окно;
+      * True там, где мьютекс недоступен, — второй экземпляр не мешаем.
     """
     if not sys.platform.startswith('win'):
         return True
@@ -6086,12 +6207,12 @@ def _single_instance_guard():
         # открыты одновременно. Два экземпляра этой копии по-прежнему
         # делят одну сессию и второй запуск блокируется.
         handle = kernel32.CreateMutexW(
-            None, False, 'TegrStudioSingleInstance')
+            None, False, SINGLE_INSTANCE_NAME)
         if not handle:
             return True
         if kernel32.GetLastError() == 183:      # ERROR_ALREADY_EXISTS
             kernel32.CloseHandle(handle)
-            return None
+            return _SingleInstanceClient(SINGLE_INSTANCE_NAME)
         return handle
     except Exception:
         return True

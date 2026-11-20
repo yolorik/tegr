@@ -513,6 +513,8 @@ ConnectionMenu = _windows_mod.ConnectionMenu
 CornerConnectionButton = _windows_mod.CornerConnectionButton
 WorkerThread = _windows_mod.WorkerThread
 _single_instance_guard = _windows_mod._single_instance_guard
+# Клиент повторного запуска — точка входа проверяет его по ping().
+_SingleInstanceClient = _windows_mod._SingleInstanceClient
 STATUS_INK_NUDGE = _windows_mod.STATUS_INK_NUDGE
 
 # ==========================================================
@@ -537,12 +539,9 @@ if __name__ == '__main__':
         app.setStyleSheet(build_style())
 
     _guard = _single_instance_guard()
-    if _guard is None:
-        QMessageBox.information(
-            None, "Уже запущено",
-            "Плеер уже работает.\n\nВторой экземпляр испортил бы файл "
-            "сессии Telegram и занял бы тот же локальный порт."
-        )
+    # Плеер уже работает — не ошибка, а повод показать его окно.
+    if hasattr(_guard, 'ping'):
+        _guard.ping()
         sys.exit(0)
 
     if mpv is None:

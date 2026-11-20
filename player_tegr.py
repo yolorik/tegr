@@ -30,11 +30,13 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
 
     guard = base._single_instance_guard()
-    if guard is None:
-        QMessageBox.information(
-            None, 'Уже запущено',
-            'Плеер уже работает.\n\nВторой экземпляр испортил бы файл '
-            'сессии Telegram и занял бы тот же локальный порт.')
+    # Плеер уже работает — не пугаем предупреждением, а просим его
+    # показать окно. Чаще всего человек только что свернул окно в трей
+    # и ткнул в ярлык, чтобы его вернуть.
+    if hasattr(guard, 'ping'):
+        shown = guard.ping()
+        print('[Запуск] плеер уже работает, прошу показать окно: '
+              f'{"да" if shown else "не ответил"}')
         sys.exit(0)
 
     if base.mpv is None:

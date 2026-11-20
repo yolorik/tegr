@@ -564,7 +564,9 @@ QMessageBox {{ background: {TG_PANEL}; }}
 #playlistpanel {{ background: {_rgba(TG_PANEL, 0.94)}; border-radius: 12px; }}
 #playlistpanel QLabel {{ color: {TG_TEXT_DIM}; font-size: 11px; }}
 #playlistpanel QListWidget {{ background: transparent; border: none; color: {TG_TEXT}; font-size: 12px; }}
-#playlistpanel QListWidget::item {{ padding: 6px 8px; border-radius: 8px; }}
+/* Строки здесь шире, чем в остальных списках: вокруг текста больше
+   воздуха, сам текст прежнего размера. */
+#playlistpanel QListWidget::item {{ padding: 9px 12px; border-radius: 8px; }}
 #playlistpanel QListWidget::item:selected {{ background: {TG_SELECT}; color: {TG_TEXT}; }}
 #playlistpanel QListWidget::item:hover {{ background: {_rgba('#ffffff', 0.08)}; }}
 

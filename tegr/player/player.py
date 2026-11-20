@@ -22,14 +22,15 @@ from collections import deque
 
 from PyQt6.QtCore import (
     QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl,
-    QCoreApplication, pyqtSignal)
+    QCoreApplication, QEasingCurve, QPropertyAnimation, QVariantAnimation,
+    pyqtSignal)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QCursor, QKeySequence, QPainter, QPixmap,
-    QShortcut)
+    QShortcut, QTransform)
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QVBoxLayout, QWidget)
+    QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QScrollArea, QSplitter, QVBoxLayout, QWidget)
 
 from ..core import config, history, log, paths, theme, utils, version
 from ..core import settings as app_settings
@@ -851,13 +852,112 @@ class PlayerWindow(QMainWindow):
         if row != self.current_video_index:
             self.play_video(row)
 
+    def _anim_playlist(self, show):
+        """Слайд с растворением — как у списков в остальном плеере.
+
+        Показ: список приходит справа, из-за края кадра, и проявляется.
+        Скрытие: так же уходит и гаснет. Прозрачность — через
+        QGraphicsOpacityEffect, сдвиг — трансформацией: геометрия виджета
+        при этом не врёт, и раскладка (а с ней и место панели) остаётся
+        прежней.
+        """
+        panel = self.playlist_panel
+        dur = int(config.PLAYLIST_ANIM_MS)
+        prev = getattr(self, '_playlist_anim', None)
+        if prev is not None:
+            try:
+                prev.stop()
+                prev.deleteLater()
+            except Exception:
+                pass
+        # Обрывок недоделанной анимации мог оставить старый эффект или
+        # сдвиг. Без сброса список «гаснет», но остаётся на экране.
+        try:
+            panel.setGraphicsEffect(None)
+            panel.setTransform(QTransform())
+        except Exception:
+            pass
+        effect = QGraphicsOpacityEffect(panel)
+        panel.setGraphicsEffect(effect)
+        # Анимацию держим на окне плеера, а не только в своём поле: у
+        # локальной переменной нет родителя, и сборщик мусора Python
+        # может убить её вместе с сигналами — анимация «доиграет» молча,
+        # и finished никогда не сработает.
+        anim = QPropertyAnimation(effect, b'opacity', self)
+        anim.setDuration(dur)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # На показе список проявляется от 0 до 1, на скрытии — гаснет от
+        # 1 до 0. Раньше значение было 0→1 в обоих случаях: на скрытии
+        # список вспыхивал и оставался на месте.
+        anim.setStartValue(0.0 if show else 1.0)
+        anim.setEndValue(1.0 if show else 0.0)
+
+        def _step(value):
+            try:
+                v = max(0.0, min(1.0, float(value)))
+                effect.setOpacity(v)
+                # Сдвиг: на входе список приходит справа, на выходе туда
+                # же уходит. Он одинаков в обе стороны: v — это доля
+                # «список на месте», а (1 - v) — насколько он отъехал.
+                shift = config.PLAYLIST_SLIDE_PX * (1.0 - v)
+                tr = QTransform()
+                tr.translate(shift, 0.0)
+                panel.setTransform(tr)
+            except Exception:
+                pass
+
+        def _done():
+            self._playlist_anim = None
+            try:
+                panel.setGraphicsEffect(None)
+                panel.setTransform(QTransform())
+            except Exception:
+                pass
+            if not show:
+                # Скрываем СРАЗУ после сброса эффекта: иначе список
+                # остаётся на экране, хотя opacity уже 0. Лишь после hide
+                # кадр снова занимает всю ширину — и только теперь можно
+                # считать место панели.
+                panel.hide()
+                # Кадр снова во всю ширину — панель возвращается в центр.
+                # Именно здесь, после hide: до него раскладка ещё держит
+                # место под список. Сам кадр пересчитывается не сразу,
+                # поэтому переезд запускаем следующим тиком событий.
+                if self._bar_in_window and self.bar.isVisible():
+                    QTimer.singleShot(0, self._sync_bar_to_frame)
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(_done)
+        self._playlist_anim = anim
+        anim.start()
+
     def _toggle_playlist(self):
-        """Показывает или прячет панель списка канала."""
+        """Показывает или прячет панель списка канала.
+
+        Список приходит и уходит слайдом с растворением — как остальные
+        списки плеера. В полном экране вместе с ним движется кадр, и
+        панель управления едет за кадром: без этого она оказывалась
+        поверх ещё открытого списка.
+        """
         show = not self._playlist_shown
         self._playlist_shown = show
         if show:
             self._refresh_playlist()
-        self.playlist_panel.setVisible(show)
+            self.playlist_panel.show()
+            # Растворение начинается с прозрачного списка, а он ещё и
+            # не был виден до этого.
+            self.playlist_panel.update()
+            # Кадр сужается на ширину списка — панель едет за ним сразу,
+            # вместе с появлением списка, а не после.
+            if self._bar_in_window and self.bar.isVisible():
+                self._anim_bar_to(self._bar_window_rect())
+            self._anim_playlist(True)
+        else:
+            # Порядок важен. Сначала список ГАСНЕТ и уходит из раскладки,
+            # и только после этого кадр становится прежним. Если посчитать
+            # место панели раньше, оно будет посчитано при ещё открытом
+            # списке — панель так и осталась бы сбоку.
+            self._anim_playlist(False)
         self.bar.btn_list.setToolTip(
             "Скрыть список канала (L)" if show else "Список канала (L)")
         # Выбор переживает перезапуск: кто один раз открыл список, обычно
@@ -1969,15 +2069,127 @@ class PlayerWindow(QMainWindow):
         except Exception as ex:
             print(f"[Окно] не удалось скрыть панель из списка окон: {ex}")
 
+    BAR_WINDOW_WIDTH = 760
+    BAR_WINDOW_BOTTOM = 36
+
     def _bar_window_rect(self):
-        """Где панель-окно стоит: по центру внизу экрана, как в оригинале."""
+        """Где панель-окно стоит в полном экране.
+
+        Было «по центру экрана, на 36 px выше нижнего края». С открытым
+        списком канала кадр становится уже и уезжает влево, а панель
+        оставалась по центру экрана — и наезжала на список. Теперь её
+        центр — центр видео-фрейма, а низ — на прежнем расстоянии от
+        нижнего края рамки. Ширина та же, что была.
+        """
         sg = (self.screen() or QApplication.primaryScreen()).geometry()
-        w = min(760, sg.width() - 60)
-        self.bar.setFixedWidth(w)
-        self.bar.adjustSize()
-        return QRect(sg.x() + (sg.width() - w) // 2,
-                     sg.y() + sg.height() - self.bar.height() - 36,
-                     w, self.bar.height())
+        frame = self._video_frame_rect()
+        # Ширина панели та же, что была, и ограничена кадром: на узком
+        # кадре (вертикальный ролик) панель не должна оказаться шире
+        # самой картинки.
+        w = int(min(self.BAR_WINDOW_WIDTH, max(1, frame.width())))
+        x = int(frame.center().x()) - w // 2
+        # За края экрана не выпускаем: очень узкий кадр у самого края
+        # иначе увёл бы панель целиком за экран.
+        x = max(sg.x(), min(x, sg.right() - w + 1))
+        h = int(self.bar.height() or self.bar.sizeHint().height())
+        # Низ — от низа кадра: под панелью остаётся то же 36 px, что и
+        # раньше от низа экрана.
+        y = int(frame.bottom()) - h - self.BAR_WINDOW_BOTTOM + 1
+        return QRect(x, y, w, h)
+
+    def _video_frame_rect(self):
+        """Место, отданное видео, в глобальных координатах.
+
+        По нему считается место панели: её центр — центр видео. В
+        полном экране контейнер видео занимает всё, что осталось после
+        списка канала, поэтому панель уезжает вместе с кадром.
+        """
+        host = self.container
+        try:
+            area = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
+        except Exception:
+            try:
+                area = self.screen().geometry()
+            except Exception:
+                area = QRect(0, 0, 1280, 720)
+        # Пропорции ролика здесь не вычитаем: кадр — это место, которое
+        # отдано видео. Черные поля сверху/снизу от ширины кадра не
+        # зависят, поэтому по горизонтали центр совпадает в любом случае.
+        return area
+
+    def _anim_bar_to(self, rect):
+        """Плавно ставит панель-окно на новое место (слайд + растворение).
+
+        Панель в полном экране — отдельное окно, и переезд делаем
+        геометрией: так она едет вместе с кадром, а не прыгает. Прозрачность
+        ведём через windowOpacity: QGraphicsOpacityEffect на отдельном окне
+        не рисуется.
+        """
+        bar = self.bar
+        if bar is None:
+            return
+        # Низ панели анимация не трогает: он не зависит от списка (список
+        # шире/уже кадра — только по горизонтали), а если считать его от
+        # кадра посреди перестройки раскладки, панель «прыгает» вниз и
+        # обратно. Список в полном экране идёт во всю высоту, так что низ
+        # панели всегда — от низа экрана.
+        y_bottom = int(rect.y() + rect.height())
+        # Куда панель должна приехать. Переезд запускается один за
+        # другим, и между ними мог остаться старый — прерванная
+        # анимация, «остановленная» на полпути, панель не доводит.
+        # Поэтому цель помним отдельно, а каждый новый переезд
+        # начинается от фактического места.
+        self._bar_move_target = QRect(rect)
+        target = QRect(rect)
+        # Прерванная анимация не доводит панель до места: начинаем новый
+        # переезд от того места, где она застряла, а не от цели.
+        old = getattr(self, '_bar_move_anim', None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        start = bar.geometry()
+        if start == target:
+            bar.setGeometry(target)
+            self._bar_move_target = None
+            return
+        anim = QVariantAnimation(self)
+        anim.setDuration(config.PLAYLIST_ANIM_MS)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+
+        def _step(value):
+            try:
+                t = float(value)
+                bar.setGeometry(
+                    int(round(start.x() + (target.x() - start.x()) * t)),
+                    y_bottom - int(round(
+                        start.height() + (target.height() - start.height()) * t)),
+                    int(round(start.width() + (target.width() - start.width()) * t)),
+                    int(round(start.height() + (target.height() - start.height()) * t)))
+                bar.setWindowOpacity(0.55 + 0.45 * min(1.0, t * 1.4))
+            except Exception:
+                pass
+
+        def _done():
+            self._bar_move_anim = None
+            try:
+                # Конечное место считаем заново: раскладка к этому мигу
+                # могла досчитаться (список уже скрылся), и прежний
+                # расчёт опирался бы на устаревший кадр.
+                goal = self._bar_window_rect()
+                self._bar_move_target = None
+                bar.setGeometry(goal)
+                bar.setWindowOpacity(1.0)
+            except Exception:
+                pass
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(_done)
+        self._bar_move_anim = anim
+        anim.start()
 
     def _attach_bar_window(self):
         """Уводит панель в прозрачное окно поверх кадра (полный экран)."""
@@ -2004,6 +2216,7 @@ class PlayerWindow(QMainWindow):
         self.bar.setGeometry(self._bar_window_rect())
         self._hide_window_from_switchers(self.bar)
         self.bar.show()
+        self._bar_hidden_by_layout = False
         # После show() у окна есть настоящий дескриптор — прячем из
         # Alt+Tab ещё раз: Qt сбрасывает этот признак при первом показе.
         self._hide_window_from_switchers(self.bar)
@@ -2085,6 +2298,34 @@ class PlayerWindow(QMainWindow):
         self.pip_window.activateWindow()
         self.show_osd("Картинка в картинке: двойной клик или Esc — выход",
                       2500)
+
+    def _sync_bar_to_frame(self):
+        """Ставит панель-окно по кадру, если в полном экране она на виду.
+
+        Вызывается всегда, когда кадр мог измениться: окно поменяло
+        размер, переехало на другой монитор, поменялись пропорции ролика
+        или открылся список канала. В оконном режиме панель трогать не
+        нужно — там она часть раскладки.
+        """
+        if not getattr(self, '_bar_in_window', False):
+            return
+        if not self.bar.isVisible():
+            # Панель спрятана таймером: не выпускаем её поверх кино.
+            return
+        target = self._bar_window_rect()
+        if self.bar.geometry() == target:
+            return
+        self._anim_bar_to(target)
+
+    def resizeEvent(self, event):
+        """Окно поменяло размер — панель едет за кадром (полный экран)."""
+        super().resizeEvent(event)
+        self._sync_bar_to_frame()
+
+    def moveEvent(self, event):
+        """Окно переехало (другой монитор) — панель едет за кадром."""
+        super().moveEvent(event)
+        self._sync_bar_to_frame()
 
     def _on_video_aspect(self, aspect):
         """Пришли пропорции нового ролика: подгоняем окно PiP.
