@@ -120,12 +120,25 @@ def build_tegr_style():
     accent_hi = p['accent_hi']
     good = p['ok']
     error = p['error']
-    # Полупрозрачные заливки для плоского выделения строк: акцентная
-    # подложка выбранного пункта и едва заметная — под курсором.
+    # Подложки строк — ПЛОТНЫЕ цвета, уже смешанные с фоном, а не
+    # полупрозрачные. Полупрозрачная заливка каждый раз кладётся поверх
+    # того, что уже нарисовано, и от касания к касанию строка становится
+    # всё светлее (на «Графите» за пять наведений светлела с #101214 до
+    # #464747). Смешанные один раз цвета от повторов не меняются.
     ac = QColor(accent)
     tc = QColor(text)
-    accent_tint = f'rgba({ac.red()}, {ac.green()}, {ac.blue()}, 30)'
-    hover_tint = f'rgba({tc.red()}, {tc.green()}, {tc.blue()}, 14)'
+    base_bg = QColor(p['bg'])
+
+    def _mix(base, tint, alpha):
+        """Непрозрачный результат наложения tint на base с долей alpha."""
+        k = max(0.0, min(1.0, alpha))
+        return QColor(
+            round(base.red() + (tint.red() - base.red()) * k),
+            round(base.green() + (tint.green() - base.green()) * k),
+            round(base.blue() + (tint.blue() - base.blue()) * k))
+
+    accent_tint = _mix(base_bg, ac, 30 / 255).name()
+    hover_tint = _mix(base_bg, tc, 14 / 255).name()
 
     return f"""
 QWidget {{
@@ -135,6 +148,12 @@ QWidget {{
 }}
 QMainWindow, QDialog {{ background: {p['bg']}; }}
 QWidget#tegrRoot {{ background: transparent; }}
+/* Окно плеера: фон под кадром — из темы, а не чёрный. Кадр видео
+   QVideoWidget подкрашивается сам, поэтому тема видна только по краям
+   кадра, за панелью и вокруг видео. */
+QWidget#playerroot {{ background: {p['bg']}; border: none; }}
+QWidget#playervideo {{ background: {p['bg']}; border: none; }}
+QWidget#playervideobox {{ background: {p['bg']}; border: none; }}
 QWidget#tegrBrandBox {{
     background: transparent; border-radius: {s(6)}px;
 }}

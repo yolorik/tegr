@@ -25,8 +25,8 @@ from PyQt6.QtCore import (
     QCoreApplication, QEasingCurve, QPropertyAnimation, QVariantAnimation,
     pyqtSignal)
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QCursor, QKeySequence, QPainter, QPixmap,
-    QShortcut, QTransform)
+    QAction, QActionGroup, QColor, QCursor, QKeySequence, QPainter, QPalette,
+    QPixmap, QShortcut, QTransform)
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
@@ -160,11 +160,12 @@ class PlayerWindow(QMainWindow):
 
         central = QWidget()
         central.setObjectName("playerroot")
-        # У окна плеера фон чёрный, как у самого кадра: иначе по краям
-        # видео оставалась кайма цвета темы — на светлой теме она и
-        # выглядела белой обводкой вокруг видео.
-        central.setStyleSheet(
-            "#playerroot { background: #000000; border: none; }")
+        # Фон окна берём из темы (цвет его задаёт таблица стилей по имени
+        # playerroot): плеер — часть приложения, и на каждой теме у него
+        # свой фон. Чёрным красить нельзя: в светлых темах окно плеера
+        # выпадало из оформления сплошным чёрным прямоугольником.
+        central.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
         self.root_layout = QVBoxLayout(central)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1992,6 +1993,11 @@ class PlayerWindow(QMainWindow):
         # скругляет углы — даже в полноэкранном режиме. Из-за неё по
         # всему краю «просвечивала» кайма, а углы были скруглены.
         self._strip_windows_frame()
+        # Ждём цикл событий: внутри setWindowState раскладка ещё в размере
+        # окна и досчитывается уже после него — панель иначе встала бы по
+        # низу старого окна и поехала потом.
+        for _delay in (0, 50, 250):
+            QTimer.singleShot(_delay, self._settle_bar_after_fs)
         self._attach_bar_window()
         self._mouse_watch.start()
         self.activateWindow()
@@ -2190,6 +2196,11 @@ class PlayerWindow(QMainWindow):
         anim.finished.connect(_done)
         self._bar_move_anim = anim
         anim.start()
+        # Страховка: анимацию может оборвать смена размера окна (панель
+        # становится отдельным окном на входе в полный экран). Тогда
+        # панель так и осталась бы на полпути и полупрозрачной.
+        QTimer.singleShot(config.PLAYLIST_ANIM_MS + 80,
+                          lambda: self._finish_bar_move(anim))
 
     def _attach_bar_window(self):
         """Уводит панель в прозрачное окно поверх кадра (полный экран)."""
@@ -2204,16 +2215,57 @@ class PlayerWindow(QMainWindow):
             Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.bar.setAttribute(
             Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.bar.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool)
-        self.bar.setParent(None)
+        flags = (Qt.WindowType.FramelessWindowHint
+                 | Qt.WindowType.WindowStaysOnTopHint
+                 | Qt.WindowType.Tool)
+        self.bar.setWindowFlags(flags)
+        # Открепляем, только если панель ещё в раскладке. setParent(None)
+        # у уже самостоятельного окна СБРАСЫВАЕТ заданные флаги: панель
+        # теряла «это окно» и оставалась виджетом без родителя — висела
+        # посреди кадра узкой полосой, без скруглений и в размере
+        # раскладки. Именно это видели после «PiP → двойной клик», когда
+        # панель уже была окном.
+        #
+        # Проверку делаем по геометрии, а не по parent(): Qt считает окно
+        # своим же родителем, и parent() is None не ловит этот случай.
+        stale = (self.bar.isWindow()
+                 and self.bar.geometry().topLeft() == QPoint(0, 0))
+        if self.bar.parent() is not None or stale:
+            self.bar.setParent(None)
+        self.bar.setWindowFlags(flags)
+        # Размер и место — ДО show().
+        #
+        # Окно, которое показывают впервые, Qt выводит на экран с размером
+        # по sizeHint — то есть во всю ширину кадра. Поставить место
+        # после show() не помогает: один кадр успевает уйти на экран
+        # неправильным, и его видно как вспышку полосы на всю ширину в
+        # начале серии.
+        target = self._bar_window_rect()
+        self.bar.setGeometry(target)
+        # Своего рисования у окна панели нет: подложку рисует её
+        # paintEvent, а он может не прийти, пока окно не получило кадр
+        # отрисовки. Окно без своей заливки Windows закрашивает белым —
+        # отсюда и вспышка при входе в полный экран. Красим окно панели
+        # подложкой её же цвета.
+        self._paint_bar_window_backdrop()
+        # Панель только что стала окном — прозрачность у неё полная.
+        # Иначе от прежнего переезда оставалась полоса 0.55, и в полном
+        # экране панель застывала полупрозрачной.
+        try:
+            self.bar.setWindowOpacity(1.0)
+        except Exception:
+            pass
+        # Второй раз, когда окно уже создано.
+        #
+        # У нового окна Qt может поставить размер по sizeHint уже после
+        # первого setGeometry — по нему панель выходила во всю ширину.
+        # Проверено: нативное окно показывалось с правильным
+        # прямоугольником, поэтому это страховка, а не основная причина.
+        QTimer.singleShot(0, self._seed_bar_window_rect)
         # Клавиши принадлежат видео: панель фокус не забирает.
         self._attach_bar_shortcuts()
         # В полном экране панель плавает: скругление уместно.
         self.bar.set_rounded(True)
-        self.bar.setGeometry(self._bar_window_rect())
         self._hide_window_from_switchers(self.bar)
         self.bar.show()
         self._bar_hidden_by_layout = False
@@ -2235,6 +2287,13 @@ class PlayerWindow(QMainWindow):
             Qt.WidgetAttribute.WA_TranslucentBackground, False)
         if self.bar.isWindow():
             self.bar.setWindowFlags(Qt.WindowType.Widget)
+        # После смены флагов окно пересоздаётся и получает непрозрачность
+        # 1.0 — прежняя полоса 0.55 «прилипала» к панели, и в полном
+        # экране она выглядела полупрозрачной.
+        try:
+            self.bar.setWindowOpacity(1.0)
+        except Exception:
+            pass
         self._setup_bar_shortcuts()
 
     def show_fullscreen_controls(self):
@@ -2270,6 +2329,11 @@ class PlayerWindow(QMainWindow):
         # Запоминаем ДО любых изменений: ниже панель прячется, и по её
         # then-состоянию уже не понять, была ли она на экране.
         self._bar_was_visible_before_pip = self.bar.isVisible()
+        # И где мы были: если полный экран, то в него и вернёмся. Сам
+        # флаг ниже снимается — главное окно спрятано, и признак «окно в
+        # полном экране» становится ложью до самого возврата.
+        self._pip_returns_to_fs = bool(
+            getattr(self, '_one_window_fs', False))
         self.video_row.removeWidget(self.container)
         self.pip_window.setCentralWidget(self.container)
         # Главное окно прячем: смысл режима — маленькая картинка и ничего
@@ -2298,6 +2362,88 @@ class PlayerWindow(QMainWindow):
         self.pip_window.activateWindow()
         self.show_osd("Картинка в картинке: двойной клик или Esc — выход",
                       2500)
+
+    def _finish_bar_move(self, anim):
+        """Доводит переезд панели, если он прервался посреди пути."""
+        if getattr(self, '_bar_move_anim', None) is not anim:
+            return
+        try:
+            anim.stop()
+        except Exception:
+            pass
+        self._bar_move_anim = None
+        self._bar_move_target = None
+        try:
+            self.bar.setWindowOpacity(1.0)
+            if getattr(self, '_bar_in_window', False):
+                self.bar.setGeometry(self._bar_window_rect())
+        except Exception:
+            pass
+    def _seed_bar_window_rect(self):
+        """Задаёт панели-окну её место ещё раз, уже после показа.
+
+        Окно, которое показали впервые, Qt вправе пересчитать по
+        sizeHint. Проверка ничего не делает, если место уже правильное.
+        """
+        if not getattr(self, '_bar_in_window', False):
+            return
+        if not getattr(self, '_one_window_fs', False):
+            return
+        target = self._bar_window_rect()
+        if self.bar.geometry() == target:
+            return
+        self.bar.setGeometry(target)
+    def _paint_bar_window_backdrop(self):
+        """Красит окно панели в цвет её подложки.
+
+        Подложку панель рисует сама в paintEvent. Пока этого кадра нет,
+        окно показывает то, что задала Windows, — а это белое. Заливка
+        окна цветом подложки убирает вспышку и совпадает с тем, что
+        панель нарисует через мгновение.
+        """
+        try:
+            light = theme.is_light()
+            base = QColor(theme.theme()['panel'] if light
+                          else theme.theme()['bg_deep'])
+        except Exception:
+            base = QColor('#0b0f14')
+        try:
+            self.bar.setAutoFillBackground(True)
+            p = self.bar.palette()
+            p.setColor(QPalette.ColorRole.Window, base)
+            p.setColor(QPalette.ColorRole.Base, base)
+            self.bar.setPalette(p)
+        except Exception:
+            pass
+    def _settle_bar_after_fs(self):
+        """Ставит панель по кадру, когда вход в полный экран закончен.
+
+        Сразу после setWindowState окно уже полноэкранное, а раскладка
+        внутри ещё в размере прежнего окна: кадр ниже на высоту нижней
+        панели окна. Привязываться к нему в этот миг нельзя.
+        """
+        if not getattr(self, '_bar_in_window', False):
+            return
+        if getattr(self, '_entering_fs', False):
+            return
+        if not getattr(self, '_one_window_fs', False):
+            return
+        if not self.bar.isVisible():
+            return
+        target = self._bar_window_rect()
+        if self.bar.geometry() == target:
+            return
+        # Без переезда: панель только что появилась на экране, и её место
+        # ещё никому не запомнилось — анимировать нечего.
+        move = getattr(self, '_bar_move_anim', None)
+        if move is not None:
+            try:
+                move.stop()
+            except Exception:
+                pass
+        self._bar_move_anim = None
+        self._bar_move_target = None
+        self.bar.setGeometry(target)
 
     def _sync_bar_to_frame(self):
         """Ставит панель-окно по кадру, если в полном экране она на виду.
@@ -2675,10 +2821,20 @@ class PlayerWindow(QMainWindow):
         return QRect(left, top, width, height)
 
     def _exit_pip(self):
-        """Возвращает видео в главное окно и снова показывает его."""
+        """Возвращает видео в главное окно и снова показывает его.
+
+        Пришли из полноэкранного режима — туда же и возвращаемся. Раньше
+        выход из PiP всегда отдавал видео в раскладку окна, и после
+        двойного клика по маленькому окну полноэкранный режим пропадал:
+        на панель снова вставала раскладка и другой набор кнопок.
+        """
         if (not self.pip_window.isVisible()
                 and self.container.parent() is not self.pip_window):
             return
+        # Возвращаемся туда, откуда пришли. Флаг берём и обнуляем: он
+        # относится к одному заходу, а не к следующему.
+        back_to_fs = bool(getattr(self, '_pip_returns_to_fs', False))
+        self._pip_returns_to_fs = False
         # Запоминаем, где пользователь оставил окно PiP и какого оно было
         # размера. Место берётся из геометрии, размер — отдельно: иначе
         # пропорции прошлого ролика вернулись бы при следующем входе.
@@ -2695,16 +2851,54 @@ class PlayerWindow(QMainWindow):
         self.video_row.insertWidget(0, self.container, 1)
         if self.root_layout.indexOf(self.bar) < 0:
             self.root_layout.addWidget(self.bar)
+        # Панель возвращаем в раскладку ДО показа окна.
+        #
+        # Она всё ещё отдельное окно полного экрана. Если показать окно
+        # плеера, пока панель висит отдельно, Qt уводит её к себе в окно,
+        # но виджетом раскладки от этого не сделает: панель оставалась
+        # виджетом с родителем-окном, без флагов и без места — узкой
+        # полосой посреди кадра. Ровно это и видели после «PiP → двойной
+        # клик». Поэтому полный экран снимаем заранее: _attach_bar_window
+        # ниже наденет всё обратно.
+        if self._bar_in_window:
+            self._bar_in_window = False
+            self._restore_bar_to_layout()
         self._pip_drag = None
         self._pip_moved = False
         self._pip_resize = None
         self._pip_resize_geom = None
         self._pip_resize_start = None
         self.show()
-        # Панель главного окна возвращаем, если она была видна до ухода
-        # в PiP: иначе окно возвращалось без неё, и управлять было нечем,
-        # пока не тронешь мышью.
-        if getattr(self, '_bar_was_visible_before_pip', True):
+        if back_to_fs:
+            # Панель снова уходит в своё окно поверх кадра: в раскладке
+            # она осталась бы узкой полосой оконного вида посреди
+            # полноэкранного кадра. Видимость она выставит сама.
+            self._one_window_fs = True
+            self._mouse_watch.start()
+            if not (self.windowState()
+                    & Qt.WindowState.WindowFullScreen):
+                # Окно показалось заново и вышло из полноэкранного
+                # режима — возвращаем его, иначе панель окажется окном
+                # поверх небольшого окна.
+                self._entering_fs = True
+                try:
+                    self.setWindowState(
+                        self.windowState()
+                        | Qt.WindowState.WindowFullScreen)
+                finally:
+                    self._entering_fs = False
+                self._strip_windows_frame()
+            self._attach_bar_window()
+            # Окно показалось заново, и раскладка внутри него ещё
+            # досчитывается: панель поставим по кадру, когда она узнает
+            # настоящий размер. Сам _attach_bar_window этого не знает —
+            # в этот миг кадр ещё в размере прежнего окна.
+            for _delay in (50, 250):
+                QTimer.singleShot(_delay, self._settle_bar_after_fs)
+        elif getattr(self, '_bar_was_visible_before_pip', True):
+            # Панель главного окна возвращаем, если она была видна до
+            # ухода в PiP: иначе окно возвращалось без неё, и управлять
+            # было нечем, пока не тронешь мышью.
             self.bar.show()
         self.raise_()
         self.activateWindow()

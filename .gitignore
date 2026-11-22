@@ -27,6 +27,9 @@ tegr.log
 tegr.log.*
 stream_cache/
 
+# Тестовая сборка: exe со своими данными (сессия, настройки, кеш)
+Tegr_test/
+
 # Бэкапы исходников
 _backups/
 

@@ -457,6 +457,16 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
+def _banner_max_height():
+    """Верхняя граница высоты полосы обновления.
+
+    В узком окне текст занимает две-три строки и кнопки идут под ним,
+    поэтому прежние 52 px его обрезали. Рост всё равно ограничен: без
+    границы полоса оттесняла списки вниз.
+    """
+    return theme.scale_px(96)
+
+
 class UpdateBanner(QWidget):
     """Полоса обновления внутри главного окна.
 
@@ -478,44 +488,92 @@ class UpdateBanner(QWidget):
     # Нажали «Перезапустить и обновить».
     restart = pyqtSignal()
 
+    # Ниже этой ширины текст и кнопки ставятся друг под друга. В узком
+    # окне (одна колонка) они в одну строку не влезают: текст
+    # обрезался многоточием, а кнопки уходили за край.
+    WIDE_MIN = 400
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('updatebanner')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # Полоса не должна раздуваться на всю доступную высоту: без этого
-        # она занимала треть окна и оттесняла списки вниз.
+        # она занимала треть окна и оттесняла списки вниз. Высота — по
+        # содержимому и не больше верхней границы: в узком окне текст
+        # занимает две-три строки.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Maximum)
-        self.setMaximumHeight(52)
+        self.setMaximumHeight(_banner_max_height())
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(12, 6, 8, 6)
-        row.setSpacing(10)
+        # Две строки: сверху текст (в узком окне одна, в широком — это
+        # его основная часть), снизу шкала и кнопки. Одной строкой всё
+        # не помещалось в узкое окно, а перенос внутри неё тянул кнопки
+        # не туда.
+        col = QVBoxLayout(self)
+        col.setContentsMargins(12, 6, 8, 6)
+        col.setSpacing(6)
 
         self.lbl_text = QLabel('')
         self.lbl_text.setWordWrap(True)
-        row.addWidget(self.lbl_text, 1)
+        # Растягиваем текст, а не кнопки: слово переносится, а не
+        # обрезается многоточием.
+        self.lbl_text.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                    QSizePolicy.Policy.Minimum)
+        col.addWidget(self.lbl_text)
 
-        # Шкала загрузки: видна только пока качается.
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+
+        # Шкала загрузки: видна только пока качается. Тянется по ширине
+        # окна, но не уже 60 px: в узком окне она занимала больше места,
+        # чем оставалось кнопкам.
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setTextVisible(False)
-        self.bar.setFixedWidth(160)
+        self.bar.setMinimumWidth(60)
         self.bar.setFixedHeight(8)
         self.bar.hide()
-        row.addWidget(self.bar)
+        row.addWidget(self.bar, 1)
 
+        # Кнопки не сжимаются: подпись «Перезапустить» иначе обрезалась
+        # до «Пере…».
         self.btn_action = QPushButton('Обновить')
         self.btn_action.setObjectName('primary')
-        self.btn_action.setMinimumHeight(30)
+        self.btn_action.setMinimumHeight(theme.scale_px(30))
+        self.btn_action.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                      QSizePolicy.Policy.Fixed)
         self.btn_action.clicked.connect(self._on_action)
         row.addWidget(self.btn_action)
 
         self.btn_later = QPushButton('Позже')
-        self.btn_later.setMinimumHeight(30)
+        self.btn_later.setMinimumHeight(theme.scale_px(30))
+        self.btn_later.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                     QSizePolicy.Policy.Fixed)
         self.btn_later.clicked.connect(self._on_later)
         row.addWidget(self.btn_later)
+
+        # Пустая левая половина держит кнопки у правого края: без неё
+        # они липли к тексту посреди полосы.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding,
+                             QSizePolicy.Policy.Preferred)
+        row.addWidget(spacer, 1)
+
+        # Второй отрезок — для широкого окна, где текст стоит рядом с
+        # кнопками. В узком он пуст: там текст — отдельная верхняя строка.
+        self._wide_text = QLabel('')
+        self._wide_text.setWordWrap(True)
+        self._wide_text.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Preferred)
+        self._wide_text.hide()
+        row.insertWidget(0, self._wide_text, 2)
+
+        col.addLayout(row)
+        self._col = col
+        self._row = row
+        self._spacer = spacer
 
         # Отдельного крестика нет. Он дублировал «Позже» — обе кнопки
         # скрывали полосу, — а выглядел при этом пустым квадратом: символ
@@ -526,12 +584,81 @@ class UpdateBanner(QWidget):
         self._state = 'offer'
         self.hide()
 
+    def resizeEvent(self, event):
+        """Ширина окна поменялась — переставляем текст, шкалу и кнопки.
+
+        Держим это здесь, а не при смене текста: окно можно потянуть за
+        край в любой момент, а в узкой ширине та же самая строка не
+        помещается.
+        """
+        super().resizeEvent(event)
+        self._apply_narrow()
+
+    def _is_narrow(self):
+        return self.width() < theme.scale_px(self.WIDE_MIN)
+
+    def _apply_narrow(self):
+        """Раскладывает содержимое под ширину окна.
+
+        Узко — текст сверху во всю ширину, под ним шкала и кнопки.
+        Широко — одна строка: текст, шкала и кнопки у правого края.
+        """
+        narrow = self._is_narrow()
+        if getattr(self, '_narrow', None) == narrow:
+            self._sync_text()
+            return
+        self._narrow = narrow
+        row = self._row
+        col = self._col
+        if narrow:
+            # Текст уходит в отдельную верхнюю строку во всю ширину —
+            # в одну строку с кнопками он не помещается.
+            col.insertWidget(0, self.lbl_text)
+            self._wide_text.hide()
+            self.bar.setParent(self)
+            col.insertWidget(1, self.bar)
+            self._spacer.hide()
+        else:
+            col.removeWidget(self.bar)
+            row.insertWidget(0, self.bar, 1)
+            col.removeWidget(self.lbl_text)
+            self.lbl_text.hide()
+            self._wide_text.show()
+            self._spacer.show()
+        self._sync_text()
+
+    def _set_text(self, text):
+        """Запоминает текст состояния и показывает его в обоих ярлыках.
+
+        Ярлыка два — для узкого и для широкого окна, виден всегда один.
+        Текст живёт здесь, а не в ярлыке: иначе при смене ширины на
+        экран вышел бы ярлык с прошлым состоянием.
+        """
+        self._text = text
+        self._sync_text()
+
+    def _sync_text(self):
+        """Один текст — в тот ярлык, который сейчас на экране."""
+        text = getattr(self, '_text', '')
+        narrow = getattr(self, '_narrow', True)
+        target = self.lbl_text if narrow else self._wide_text
+        other = self.lbl_text if target is self._wide_text else self._wide_text
+        if target.text() != text:
+            target.setText(text)
+        if other.text() != text:
+            other.setText(text)
+
+    def showEvent(self, event):
+        """Полоса показалась — сразу ставим нужный вид."""
+        super().showEvent(event)
+        self._apply_narrow()
+
     def show_offer(self, info, current_version):
         """Показывает предложение обновиться."""
         self._state = 'offer'
         ver = info.tag.lstrip('vV')
         size = f' · {info.size / 1048576:.0f} МБ' if info.size else ''
-        self.lbl_text.setText(
+        self._set_text(
             f"Доступна версия {ver} (у вас {current_version}){size}")
         self.bar.hide()
         self.btn_action.setText('Обновить')
@@ -547,23 +674,26 @@ class UpdateBanner(QWidget):
             pct = min(100, int(self._got * 100 / total))
             self.bar.setRange(0, 100)
             self.bar.setValue(pct)
-            self.lbl_text.setText(
+            self._set_text(
                 f"Скачиваю обновление: {pct}% "
                 f"({self._got / 1048576:.1f} из {total / 1048576:.1f} МБ)")
         else:
             self.bar.setRange(0, 0)
-            self.lbl_text.setText('Скачиваю обновление…')
+            self._set_text('Скачиваю обновление…')
         self.bar.show()
         self.btn_action.hide()
         self.btn_later.setText('Отмена')
         self.btn_later.show()
+        # Полоса могла быть ещё скрыта — например, ход загрузки пришёл
+        # раньше, чем показалось предложение обновиться.
+        self.show()
 
     def show_ready(self):
         """Загрузка закончена: предлагаем перезапуститься."""
         self._state = 'ready'
         # Текст короткий намеренно: длинный переносится на вторую строку,
         # и полоса становится выше соседних состояний.
-        self.lbl_text.setText('Обновление скачано и проверено.')
+        self._set_text('Обновление скачано и проверено.')
         self.bar.setRange(0, 100)
         self.bar.setValue(100)
         self.bar.show()
@@ -576,7 +706,7 @@ class UpdateBanner(QWidget):
     def show_error(self, text):
         """Загрузка не удалась: сообщаем в той же полосе."""
         self._state = 'offer'
-        self.lbl_text.setText(f'Не удалось скачать обновление: {text}')
+        self._set_text(f'Не удалось скачать обновление: {text}')
         self.bar.hide()
         self.btn_action.hide()
         self.btn_later.setText('Скрыть')
@@ -2800,8 +2930,18 @@ class MainWindow(QMainWindow):
         if icon is not None:
             self.setWindowIcon(icon)
         self.resize(800, 550)
+        # Пока окно не показано, его поверхность остаётся пустой, и окно
+        # на долю секунды мелькает белым: так рисует Windows, а не
+        # программа. Красим фон окна в цвет темы ДО того, как его
+        # покажут, — вспышка становится цвета плеера, а не белой.
+        self._paint_window_chrome()
 
         central = QWidget()
+        # Фон центрального виджета берём из таблицы стилей темы: палитра
+        # запоминает цвет на момент создания окна и при смене темы его не
+        # меняет — окно оставалось цветом прошлой темы.
+        central.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
         main_lay = QVBoxLayout(central)
         # Нижнее поле убираем: по умолчанию QVBoxLayout оставляет под
         # сплиттером девять точек пустой площади цвета фона, а строка
@@ -3629,17 +3769,125 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _paint_window_chrome(self):
+        """Красит фон окна в цвет темы ещё до первого показа.
+
+        Окно показывают раньше, чем готов список каналов (а при
+        сворачивании в трей — показывают заново). Пока виджеты не
+        отрисовались, пустую поверхность закрашивает Windows своим
+        цветом: на тёмной теме это белая вспышка.
+
+        Палитру окна и его таблицу стилей здесь НЕ трогаем: палитра
+        запоминает цвет на момент создания окна и при смене темы его не
+        меняет — всё окно навсегда оставалось цветом темы, выбранной при
+        запуске. Цвет фона задаёт применяемый стиль темы, а от вспышки
+        защищает цвет класса окна.
+        """
+        try:
+            pal = theme.theme()
+            bg = QColor(pal.get('bg_deep') or pal.get('bg') or '#0e1621')
+        except Exception:
+            bg = QColor('#0e1621')
+        self._paint_native_class_background(bg)
+
+    def _paint_native_class_background(self, color):
+        """Задаёт окну Windows цвет фона ещё до первого показа.
+
+        Qt красит окно уже после того, как оно попало на экран, поэтому
+        самый первый кадр — пустая поверхность. Своего цвета у класса
+        окна нет, и Windows заливает её системным (на тёмной теме —
+        белым). Задаём цвет класса сами: Windows закрашивает фон этим
+        цветом сразу, ещё до отрисовки Qt.
+        """
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            # COLORREF: 0x00BBGGRR, а не '#RRGGBB'.
+            ref = (color.red() | (color.green() << 8) | (color.blue() << 16))
+            brush = ctypes.windll.gdi32.CreateSolidBrush(ref)
+            if brush:
+                ctypes.windll.user32.SetClassLongPtrW(hwnd, -10, brush)
+            self._class_brush = brush
+        except Exception as ex:
+            print(f"[Окно] фон окна не выставился: {ex}")
+
     def _show_from_tray(self):
-        """Показывает главное окно, даже если оно свёрнуто в трей."""
-        # Свёрнутое в трей окно спрятано через hide(): showNormal() его
-        # не вытащит — у скрытого окна нет «свёрнутого» состояния.
-        if not self.isVisible():
-            self.show()
+        """Показывает главное окно, даже если оно свёрнуто в трей.
+
+        Свёрнутое в трей окно спрятано через hide(): showNormal() его не
+        вытащит — у скрытого окна нет «свёрнутого» состояния.
+
+        Почему не просто show(). Пока окно скрыто, оно не рисует, а
+        первый вывод окна на экран Windows делает сам, до того как Qt
+        успеет отрисовать содержимое. На этот кадр видно пустую
+        поверхность — на тёмной теме белую (проверено покадровой съёмкой
+        окна). Поэтому: снимаем свёрнутость и показываем окно
+        невидимым (непрозрачность 0), а проявляем уже на экране.
+        Прозрачному окну Windows свой фон не заливает, так что пустого
+        кадра не видно вовсе; непрозрачность возвращается сразу же, до
+        следующей отрисовки экрана.
+        """
         self.setWindowState(
-            self.windowState() & ~Qt.WindowState.WindowMinimized)
-        self.showNormal()
+            self.windowState() & ~Qt.WindowState.WindowMinimized
+            | Qt.WindowState.WindowNoState)
+        if not self.isVisible():
+            self.setWindowState(Qt.WindowState.WindowNoState)
+            # Окно показываем уже нарисованным: пока оно скрыто, Qt
+            # раскладывает и отрисовывает его содержимое во внутреннюю
+            # картинку. Без этого первый кадр на экране — пустая
+            # поверхность, которую Windows заливает белым.
+            #
+            # Способ со слоёным окном (WA_TranslucentBackground) здесь не
+            # годится: снятый после показа слой оставлял окно в режиме,
+            # где полупрозрачные подложки копятся от каждого наведения
+            # (строка светлеет и обратно не темнеет), а фон окна
+            # схлопывался в чёрный.
+            self._prime_for_show()
+            self.show()
+            # Просим перерисовать окно сразу после показа: событие
+            # отрисовки придёт и само, но с задержкой в кадр-два, а
+            # первый выведенный кадр — пустая поверхность.
+            self.repaint()
+            QTimer.singleShot(0, self._settle_after_tray)
+        else:
+            self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _settle_after_tray(self):
+        """Дорисовывает окно после показа из трея.
+
+        Windows выводит окно на экран до того, как Qt его нарисовал, и
+        первый кадр — пустая поверхность. Здесь просим отрисовать окно
+        ещё раз, уже когда оно на экране: на нём появляется картинка
+        темы, без вспышки и без смены режима окна.
+        """
+        try:
+            self.setWindowOpacity(1.0)
+            for w in self.findChildren(QWidget):
+                w.update()
+            self.update()
+            self.repaint()
+        except Exception:
+            pass
+
+    def _prime_for_show(self):
+        """Готовит содержимое окна, пока его ещё не видно."""
+        try:
+            central = self.centralWidget()
+            if central is not None:
+                central.setVisible(True)
+                central.updateGeometry()
+                central.update()
+        except Exception:
+            pass
+        try:
+            # Прогоняем отрисовку целиком (результат не нужен): после
+            # этого у окна уже есть готовая картинка, и на экран оно
+            # выходит сразу с ней.
+            self.grab()
+        except Exception:
+            pass
 
     def _toggle_close_to_tray(self, enabled):
         self._close_to_tray = bool(enabled)
@@ -3760,6 +4008,17 @@ class MainWindow(QMainWindow):
         # Значок трея собран из акцентного цвета — после смены темы его
         # надо пересобрать, иначе он останется в цветах прошлой темы.
         self._update_tray_icon()
+        # Цвет класса окна — тот, которым Windows закрашивает пустую
+        # поверхность при показе из трея. Он задан один раз при
+        # создании, поэтому после смены темы его надо обновить: иначе
+        # первый кадр выходил цветом прежней темы (на «Графите» —
+        # светлым, как «Бумага»).
+        try:
+            pal = theme.theme()
+            self._paint_native_class_background(
+                QColor(pal.get('bg_deep') or pal.get('bg') or '#0e1621'))
+        except Exception:
+            pass
         # Кнопка настроек и значки панели плеера нарисованы кодом, цвет в
         # стиле их не меняет: перекрашиваем вручную. Иначе после
         # переключения на светлую тему светлые значки пропадали на
@@ -3772,6 +4031,17 @@ class MainWindow(QMainWindow):
         if pw is not None and not getattr(pw, '_closed', True):
             try:
                 pw.bar.refresh_icons()
+            except Exception:
+                pass
+            # Фон окна плеера берётся из таблицы стилей по имени
+            # playerroot — новый стиль доходит до него сам, но панель,
+            # став окном в полном экране, красится ещё и палитрой.
+            try:
+                pw._paint_bar_window_backdrop()
+            except Exception:
+                pass
+            try:
+                pw.update()
             except Exception:
                 pass
 

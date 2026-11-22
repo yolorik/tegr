@@ -1014,15 +1014,26 @@ class PlayerContainer(QWidget):
         # QWidget берёт цвет темы, и на светлой теме вокруг кадра
         # оставалась светлая кайма, читавшаяся как обводка видео.
         self.setObjectName("playervideo")
-        self.setStyleSheet(
-            "QWidget#playervideo { background: #000000; border: none; }")
+        # Цвет фона задаёт таблица стилей темы (по имени playervideo):
+        # чёрной заливки здесь больше нет, иначе на светлых темах вокруг
+        # кадра была чёрная кайма.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         self.video_widget = QWidget()
-        self.video_widget.setStyleSheet("background: black;")
-        self.video_widget.setAttribute(Qt.WidgetAttribute.WA_PaintOnScreen, True)
-        self.video_widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        # Своей чёрной заливки здесь быть не должно: пока ролик не пошёл,
+        # видно именно этот фон, и в светлых темах он делал окно плеера
+        # чёрным прямоугольником посреди светлого оформления. Цвет берём
+        # из темы — он же и подложка под кадром, пока mpv не нарисовал
+        # первый кадр.
+        self.video_widget.setObjectName("playervideobox")
+        self.video_widget.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.video_widget.setAttribute(
+            Qt.WidgetAttribute.WA_PaintOnScreen, True)
+        self.video_widget.setAttribute(
+            Qt.WidgetAttribute.WA_NoSystemBackground, True)
         lay.addWidget(self.video_widget)
 
 
@@ -1108,9 +1119,15 @@ class MouseWatch(QObject):
     def probe(self):
         """Где курсор: (над окном, точка в координатах окна)."""
         w = self._window
-        if w is None or not w.isVisible():
+        if w is None:
             return (False, None)
+        # Окно уже закрывается: C++ объект удалён, а опрос ещё не
+        # остановлен. Любой вызов isVisible() здесь — RuntimeError
+        # «wrapped C/C++ object has been deleted». Молчим: опрос вот-вот
+        # остановят по сигналу закрытия.
         try:
+            if not w.isVisible():
+                return (False, None)
             # Позицию берём у Windows, а не у Qt: Qt обновляет её только
             # по событиям, а нам нужна именно свежая — за неё и боремся.
             point = ctypes.wintypes.POINT()
@@ -1123,6 +1140,10 @@ class MouseWatch(QObject):
             if not ctypes.windll.user32.GetWindowRect(hwnd,
                                                      ctypes.byref(rect)):
                 return (False, None)
+        except RuntimeError:
+            # Окно (или панель, которую трогает курсор) уже удалено.
+            # Это не «без Win32»: запасной путь по Qt упадёт так же.
+            return (False, None)
         except Exception:
             # Без Win32 остаётся то, что знает Qt. Хуже, но не смертельно.
             try:
@@ -1176,8 +1197,18 @@ class MouseWatch(QObject):
 
     def _poll(self):
         # Окно ушло с экрана — опрос больше не нужен, панель за ним
-        # прятать и показывать нечего.
-        if self._window is None or not self._window.isVisible():
+        # прятать и показывать нечего. Окно могло быть закрыто: тогда
+        # таймер останавливаем сами, иначе каждый шаг падает.
+        w = self._window
+        if w is None:
+            self.stop()
+            return
+        try:
+            visible = w.isVisible()
+        except RuntimeError:
+            self.stop()
+            return
+        if not visible:
             self._over = False
             return
         inside, _ = self.probe()
