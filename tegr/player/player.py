@@ -90,6 +90,34 @@ def _cursor_pos_win32():
         return None
 
 
+def _show_cursor_flag(visible):
+    """Прячет или возвращает системный курсор через ShowCursor.
+
+    В собранной программе QApplication.setOverrideCursor НЕ прячет курсор:
+    кадр рисует mpv в своё дочернее окно, и курсор над ним задаёт окно mpv,
+    а не Qt. Проверено замером GetCursorInfo: вне сборки дескриптор курсора
+    менялся на пустой, в .exe — нет. ShowCursor действует на уровне системы
+    и работает в обоих случаях, поэтому прячем им, а оверрайд Qt оставляем
+    как дополнительную страховку.
+
+    Счётчик ShowCursor хранится на поток; чтобы не «залипнуть» со спрятанным
+    курсором, ведём его до отрицательного значения, а возвращаем столько же
+    раз (не больше 10 — защита от разгона счётчика).
+    """
+    try:
+        user32 = ctypes.windll.user32
+        for _ in range(10):
+            if visible:
+                if user32.ShowCursor(True) >= 0:
+                    break
+            else:
+                if user32.ShowCursor(False) < 0:
+                    break
+        return True
+    except Exception:
+        return False
+
+
 class PlayerWindow(QMainWindow):
     sig_pos = pyqtSignal(float)
     sig_dur = pyqtSignal(float)
@@ -202,6 +230,9 @@ class PlayerWindow(QMainWindow):
         # Панель в полном экране — своё прозрачное окно: кадр рисует
         # mpv, и поверх него обычный виджет не виден (см. _attach_bar_window).
         self._bar_in_window = False
+        # В фуллскрине курсор живёт вместе с панелью управления:
+        # прячется вместе с ней, возвращается на первом движении мыши.
+        self._fs_cursor_hidden = False
         self._sink_qt_video()
         self.bar = widgets.ControlBar()
         # Панель управления — обычный дочерний виджет окна. Раньше она
@@ -2021,6 +2052,7 @@ class PlayerWindow(QMainWindow):
                 self.windowState() & ~Qt.WindowState.WindowFullScreen)
             self.bar.set_rounded(False)
             self._restore_bar_to_layout()
+            self._show_fs_cursor()
             self.setCursor(Qt.CursorShape.ArrowCursor)
         finally:
             self._exiting_fs = False
@@ -2903,6 +2935,41 @@ class PlayerWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _hide_fs_cursor(self):
+        """Прячет курсор в полноэкранном режиме вместе с панелью.
+
+        Курсор — часть интерфейса: пока управление спрятано, ему тоже
+        незачем висеть на кадре. Возвращается он первым же движением
+        мыши (см. _show_fs_cursor).
+
+        В PiP не трогаем: там курсор нужен для перетаскивания окна.
+        """
+        if self.pip_window.isVisible():
+            return
+        if not self._is_fullscreen_view():
+            return
+        if self._fs_cursor_hidden:
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+        except Exception:
+            pass
+        # В сборке оверрайда Qt недостаточно (кадр — окно mpv): прячем
+        # курсор системно. Возврат — в _show_fs_cursor, столько же раз.
+        _show_cursor_flag(False)
+        self._fs_cursor_hidden = True
+
+    def _show_fs_cursor(self):
+        """Возвращает стрелку в полноэкранном режиме."""
+        if not self._fs_cursor_hidden:
+            return
+        self._fs_cursor_hidden = False
+        _show_cursor_flag(True)
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+
     def poke_bar(self):
         """Показывает панель управления и продлевает её жизнь.
 
@@ -2933,7 +3000,8 @@ class PlayerWindow(QMainWindow):
             if (self._osd_window is not None
                     and self._osd_window.isVisible()):
                 self._place_window_osd()
-        # Курсор в полном экране виден — возвращаем стрелку.
+        # Панель на экране — значит, и курсор.
+        self._show_fs_cursor()
         self.setCursor(Qt.CursorShape.ArrowCursor)
         if self.bar.isWindow():
             self.bar.raise_()
@@ -3200,8 +3268,8 @@ class PlayerWindow(QMainWindow):
         self.bar_timer.stop()
         if self.bar.isVisible():
             self.bar.hide()
-        # Курсор не прячем: в полном экране он должен быть виден.
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        # Курсор прячется вместе с панелью, как и по таймеру.
+        self._hide_fs_cursor()
 
     def _event_in_bar(self, obj):
         """Событие пришло от панели управления или её потомка."""
@@ -3256,8 +3324,9 @@ class PlayerWindow(QMainWindow):
             self.bar_timer.start(config.BAR_HIDE_MS)
             return
         self.bar.hide()
-        # Курсор не прячем: в полном экране он должен быть виден.
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        # Вместе с панелью убираем и курсор: управление спрятано —
+        # незачем держать на кадре стрелку. Вернётся на движении мыши.
+        self._hide_fs_cursor()
 
     def _playlist_resize_event(self, event):
         """Перетаскивание левого края панели списка: меняет её ширину.
