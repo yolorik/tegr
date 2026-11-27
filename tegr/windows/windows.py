@@ -457,12 +457,16 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
+# Боковой отступ содержимого полосы обновления: текст, кнопки и шкала
+# держатся на одном расстоянии от краёв плашки.
+BANNER_PAD = 14
+
+
 def _banner_max_height():
     """Верхняя граница высоты полосы обновления.
 
-    В узком окне текст занимает две-три строки и кнопки идут под ним,
-    поэтому прежние 52 px его обрезали. Рост всё равно ограничен: без
-    границы полоса оттесняла списки вниз.
+    Сверху текст (в узком окне две-три строки), под ним кнопки и тонкая
+    шкала. Рост ограничен, иначе полоса оттесняла бы списки вниз.
     """
     return theme.scale_px(96)
 
@@ -488,96 +492,86 @@ class UpdateBanner(QWidget):
     # Нажали «Перезапустить и обновить».
     restart = pyqtSignal()
 
-    # Ниже этой ширины текст и кнопки ставятся друг под друга. В узком
-    # окне (одна колонка) они в одну строку не влезают: текст
-    # обрезался многоточием, а кнопки уходили за край.
-    WIDE_MIN = 400
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('updatebanner')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # Полоса не должна раздуваться на всю доступную высоту: без этого
-        # она занимала треть окна и оттесняла списки вниз. Высота — по
-        # содержимому и не больше верхней границы: в узком окне текст
-        # занимает две-три строки.
+        # Высота — по содержимому и не больше верхней границы: без неё
+        # полоса занимала треть окна и оттесняла списки вниз.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Maximum)
         self.setMaximumHeight(_banner_max_height())
 
-        # Две строки: сверху текст (в узком окне одна, в широком — это
-        # его основная часть), снизу шкала и кнопки. Одной строкой всё
-        # не помещалось в узкое окно, а перенос внутри неё тянул кнопки
-        # не туда.
-        col = QVBoxLayout(self)
-        col.setContentsMargins(12, 6, 8, 6)
-        col.setSpacing(6)
+        # Раскладка одна на любую ширину: текст и кнопки в одну строку,
+        # кнопки прижаты к правому краю. Под строкой — тонкая шкала во всю
+        # ширину плашки, с теми же боковыми отступами, что у текста.
+        #
+        # Одной строкой дешевле по высоте: полоса занимает ~40 px вместо
+        # ~70 и не оттесняет списки. В узком окне текст переносится, а
+        # кнопки остаются справа.
+        pad = theme.scale_px(BANNER_PAD)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self.lbl_text = QLabel('')
-        self.lbl_text.setWordWrap(True)
-        # Растягиваем текст, а не кнопки: слово переносится, а не
-        # обрезается многоточием.
-        self.lbl_text.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                    QSizePolicy.Policy.Minimum)
-        col.addWidget(self.lbl_text)
+        # Верхняя часть: отступы есть, внизу их нет — шкала идёт следом.
+        body = QVBoxLayout()
+        body.setContentsMargins(pad, theme.scale_px(7), pad, 0)
+        body.setSpacing(theme.scale_px(4))
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(10)
+        row.setSpacing(theme.scale_px(10))
 
-        # Шкала загрузки: видна только пока качается. Тянется по ширине
-        # окна, но не уже 60 px: в узком окне она занимала больше места,
-        # чем оставалось кнопкам.
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 100)
-        self.bar.setValue(0)
-        self.bar.setTextVisible(False)
-        self.bar.setMinimumWidth(60)
-        self.bar.setFixedHeight(8)
-        self.bar.hide()
-        row.addWidget(self.bar, 1)
+        self.lbl_text = QLabel('')
+        self.lbl_text.setWordWrap(True)
+        self.lbl_text.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                    QSizePolicy.Policy.Preferred)
+        row.addWidget(self.lbl_text, 1)
+        row.addStretch(0)
 
-        # Кнопки не сжимаются: подпись «Перезапустить» иначе обрезалась
-        # до «Пере…».
+        # Кнопка «Обновить» / «Перезапустить».
         self.btn_action = QPushButton('Обновить')
         self.btn_action.setObjectName('primary')
-        self.btn_action.setMinimumHeight(theme.scale_px(30))
+        # Высота кнопок одинаковая: от неё зависит высота всей плашки,
+        # и состояния не должны прыгать при переключении.
+        self.btn_action.setFixedHeight(theme.scale_px(28))
         self.btn_action.setSizePolicy(QSizePolicy.Policy.Fixed,
                                       QSizePolicy.Policy.Fixed)
         self.btn_action.clicked.connect(self._on_action)
-        row.addWidget(self.btn_action)
 
+        # Кнопка «Позже» / «Отмена».
         self.btn_later = QPushButton('Позже')
-        self.btn_later.setMinimumHeight(theme.scale_px(30))
+        self.btn_later.setFixedHeight(theme.scale_px(28))
         self.btn_later.setSizePolicy(QSizePolicy.Policy.Fixed,
                                      QSizePolicy.Policy.Fixed)
         self.btn_later.clicked.connect(self._on_later)
+
+        row.addWidget(self.btn_action)
         row.addWidget(self.btn_later)
+        body.addLayout(row)
+        outer.addLayout(body)
+        self._body = body
 
-        # Пустая левая половина держит кнопки у правого края: без неё
-        # они липли к тексту посреди полосы.
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding,
-                             QSizePolicy.Policy.Preferred)
-        row.addWidget(spacer, 1)
+        # Шкала загрузки: тонкая линия 2 px в самом низу плашки. Боковые
+        # отступы те же, что у текста, — линия не лип к краям окна.
+        self.bar = QProgressBar()
+        self.bar.setObjectName('updbar')
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(theme.scale_px(2))
+        self.bar.hide()
+        bar_row = QHBoxLayout()
+        bar_row.setContentsMargins(pad, theme.scale_px(4), pad, 0)
+        bar_row.addWidget(self.bar)
+        outer.addLayout(bar_row)
+        self._bar_row = bar_row
 
-        # Второй отрезок — для широкого окна, где текст стоит рядом с
-        # кнопками. В узком он пуст: там текст — отдельная верхняя строка.
-        self._wide_text = QLabel('')
-        self._wide_text.setWordWrap(True)
-        self._wide_text.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                      QSizePolicy.Policy.Preferred)
-        self._wide_text.hide()
-        row.insertWidget(0, self._wide_text, 2)
-
-        col.addLayout(row)
-        self._col = col
-        self._row = row
-        self._spacer = spacer
+        self._text = ''
 
         # Отдельного крестика нет. Он дублировал «Позже» — обе кнопки
-        # скрывали полосу, — а выглядел при этом пустым квадратом: символ
-        # не влезал в отведённую ширину.
+        # скрывали полосу, — а выглядел пустым квадратом.
         self.btn_close = None
 
         # Что сейчас показывает полоса: 'offer', 'downloading', 'ready'.
@@ -585,68 +579,51 @@ class UpdateBanner(QWidget):
         self.hide()
 
     def resizeEvent(self, event):
-        """Ширина окна поменялась — переставляем текст, шкалу и кнопки.
-
-        Держим это здесь, а не при смене текста: окно можно потянуть за
-        край в любой момент, а в узкой ширине та же самая строка не
-        помещается.
-        """
+        """Ширина поменялась — обновляем текст под текущую раскладку."""
         super().resizeEvent(event)
         self._apply_narrow()
 
-    def _is_narrow(self):
-        return self.width() < theme.scale_px(self.WIDE_MIN)
+    def _set_bar_visible(self, visible):
+        """Показывает или убирает шкалу, не меняя высоту плашки.
+
+        У скрытой шкалы остаются поля раскладки, и плашка становилась на
+        4 px выше соседних состояний — при переходе «есть обновление» →
+        «качается» она прыгала. Поэтому при скрытой шкале её поля
+        обнуляются, а недостающие пиксели добавляются отступом снизу:
+        высота одинаковая во всех состояниях.
+        """
+        pad = theme.scale_px(BANNER_PAD)
+        gap = theme.scale_px(4)
+        bottom = 0 if visible else theme.scale_px(6)
+        try:
+            self._body.setContentsMargins(pad, theme.scale_px(7), pad, bottom)
+            self._bar_row.setContentsMargins(pad, gap if visible else 0, pad, 0)
+        except Exception:
+            pass
+        self.bar.setVisible(bool(visible))
 
     def _apply_narrow(self):
-        """Раскладывает содержимое под ширину окна.
+        """Обновляет текст. Раскладка одна на любую ширину.
 
-        Узко — текст сверху во всю ширину, под ним шкала и кнопки.
-        Широко — одна строка: текст, шкала и кнопки у правого края.
+        Текст всегда стоит над кнопками, поэтому при смене ширины
+        пересобирать ничего не нужно — только показать актуальный текст.
         """
-        narrow = self._is_narrow()
-        if getattr(self, '_narrow', None) == narrow:
-            self._sync_text()
-            return
-        self._narrow = narrow
-        row = self._row
-        col = self._col
-        if narrow:
-            # Текст уходит в отдельную верхнюю строку во всю ширину —
-            # в одну строку с кнопками он не помещается.
-            col.insertWidget(0, self.lbl_text)
-            self._wide_text.hide()
-            self.bar.setParent(self)
-            col.insertWidget(1, self.bar)
-            self._spacer.hide()
-        else:
-            col.removeWidget(self.bar)
-            row.insertWidget(0, self.bar, 1)
-            col.removeWidget(self.lbl_text)
-            self.lbl_text.hide()
-            self._wide_text.show()
-            self._spacer.show()
         self._sync_text()
 
     def _set_text(self, text):
-        """Запоминает текст состояния и показывает его в обоих ярлыках.
+        """Запоминает текст состояния и сразу показывает его.
 
-        Ярлыка два — для узкого и для широкого окна, виден всегда один.
-        Текст живёт здесь, а не в ярлыке: иначе при смене ширины на
-        экран вышел бы ярлык с прошлым состоянием.
+        Текст живёт здесь, а не в ярлыке: при пересоздании ярлыка на
+        экран иначе вышел бы пустой.
         """
         self._text = text
         self._sync_text()
 
     def _sync_text(self):
-        """Один текст — в тот ярлык, который сейчас на экране."""
+        """Показывает текущий текст состояния."""
         text = getattr(self, '_text', '')
-        narrow = getattr(self, '_narrow', True)
-        target = self.lbl_text if narrow else self._wide_text
-        other = self.lbl_text if target is self._wide_text else self._wide_text
-        if target.text() != text:
-            target.setText(text)
-        if other.text() != text:
-            other.setText(text)
+        if self.lbl_text.text() != text:
+            self.lbl_text.setText(text)
 
     def showEvent(self, event):
         """Полоса показалась — сразу ставим нужный вид."""
@@ -660,7 +637,7 @@ class UpdateBanner(QWidget):
         size = f' · {info.size / 1048576:.0f} МБ' if info.size else ''
         self._set_text(
             f"Доступна версия {ver} (у вас {current_version}){size}")
-        self.bar.hide()
+        self._set_bar_visible(False)
         self.btn_action.setText('Обновить')
         self.btn_action.show()
         self.btn_later.show()
@@ -680,7 +657,7 @@ class UpdateBanner(QWidget):
         else:
             self.bar.setRange(0, 0)
             self._set_text('Скачиваю обновление…')
-        self.bar.show()
+        self._set_bar_visible(True)
         self.btn_action.hide()
         self.btn_later.setText('Отмена')
         self.btn_later.show()
@@ -696,7 +673,7 @@ class UpdateBanner(QWidget):
         self._set_text('Обновление скачано и проверено.')
         self.bar.setRange(0, 100)
         self.bar.setValue(100)
-        self.bar.show()
+        self._set_bar_visible(True)
         self.btn_action.setText('Перезапустить')
         self.btn_action.show()
         self.btn_later.setText('Позже')
@@ -707,7 +684,7 @@ class UpdateBanner(QWidget):
         """Загрузка не удалась: сообщаем в той же полосе."""
         self._state = 'offer'
         self._set_text(f'Не удалось скачать обновление: {text}')
-        self.bar.hide()
+        self._set_bar_visible(False)
         self.btn_action.hide()
         self.btn_later.setText('Скрыть')
         self.btn_later.show()

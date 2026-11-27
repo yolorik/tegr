@@ -193,6 +193,16 @@ QWidget#updatebanner {{
     border-radius: 0;
 }}
 QWidget#updatebanner QLabel {{ color: {text}; }}
+/* Шкала обновления: тонкая линия во всю ширину плашки. Дорожка чуть
+   светлее фона, заливка — акцентным цветом темы, как в установщике. */
+QProgressBar#updbar {{
+    background: {border};
+    border: none; border-radius: 0;
+}}
+QProgressBar#updbar::chunk {{
+    background: {accent};
+    border: none; border-radius: 0;
+}}
 QFrame#tegrLeft, QFrame#tegrCenter, QFrame#tegrRight {{
     background: transparent; border: none; border-radius: 0;
 }}
